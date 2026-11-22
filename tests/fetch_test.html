@@ -1,0 +1,17 @@
+<!DOCTYPE html><html><head><title>Fetch Test</title>
+<style>body{font-family:'Segoe UI',sans-serif;padding:30px} .ok{color:#0b7a3b;font-weight:bold}</style></head>
+<body><h1>Fetch + JS</h1><div id="out">waiting…</div>
+<script>
+fetch('data.json').then(function(r){ return r.json(); }).then(function(data){
+  document.getElementById('out').innerHTML = '<p class="ok">' + data.greeting + '</p><ul>' +
+    data.items.map(function(x){ return '<li>' + x + '</li>'; }).join('') + '</ul>';
+});
+async function run() {
+  const r = await fetch('data.json');
+  const j = await r.json();
+  const p = document.createElement('p');
+  p.textContent = 'Async saw ' + j.items.length + ' items';
+  document.body.appendChild(p);
+}
+run();
+</script></body></html>

@@ -1,0 +1,27 @@
+[package]
+name = "aurora"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+
+[[bin]]
+name = "aurora-dev"
+path = "src/main.rs"
+
+[dependencies]
+winit = "0.30"
+softbuffer = "0.4"
+ureq = { version = "2.12", features = ["gzip"] }
+url = "2.5"
+fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+boa_engine = "0.20"
+resvg = "0.50.0"
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 2
+[profile.release]
+opt-level = 3
+lto = "thin"

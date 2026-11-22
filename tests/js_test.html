@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html><head><title>JS Test</title>
+<style>
+body { font-family: 'Segoe UI', sans-serif; background: #f4f6fb; color: #17202c; padding: 24px; }
+h1 { color: #2448c8; }
+.card { background: white; border: 1px solid #d6dbe6; border-radius: 10px; padding: 16px; margin: 12px 0; }
+#count { font-weight: bold; color: #c2410c; }
+button { font-size: 15px; padding: 6px 14px; border-radius: 7px; border: 1px solid #9aa4b5; background: #e8edf8; }
+.done { background: #e2f6e5; border-color: #5aa96a; }
+</style></head>
+<body>
+<h1 id="head">No JS</h1>
+<div class="card" id="app">Loading…</div>
+<div class="card">
+  <p>Clicks: <span id="count">0</span></p>
+  <button id="btn">Click me</button>
+</div>
+<div class="card" id="list"></div>
+<script>
+document.title = "JS Ran!";
+document.getElementById('head').textContent = 'JavaScript works';
+document.getElementById('app').innerHTML = '<b id="msg">Built by script</b><p>Generated paragraph with <a href="https://example.com">a link</a>.</p>';
+var n = 0;
+var btn = document.getElementById('btn');
+btn.addEventListener('click', function(e) {
+  n++;
+  document.getElementById('count').textContent = String(n);
+  btn.classList.add('done');
+  document.getElementById('msg').textContent = 'Clicked ' + n + ' times';
+});
+var list = document.getElementById('list');
+for (var i = 1; i <= 4; i++) {
+  var d = document.createElement('div');
+  d.textContent = 'Item ' + i;
+  d.setAttribute('data-n', i);
+  d.style.color = i % 2 ? '#2b4fb0' : '#7a4fa0';
+  list.appendChild(d);
+}
+setTimeout(function(){
+  var p = document.createElement('p');
+  p.textContent = 'Added by setTimeout';
+  p.id = 'timeout';
+  document.body.appendChild(p);
+}, 10);
+window.addEventListener('load', function(){
+  var f = document.createElement('p');
+  f.textContent = 'Load event fired';
+  f.style.color = '#087f5b';
+  document.body.appendChild(f);
+});
+</script>
+</body></html>

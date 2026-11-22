@@ -1,0 +1,9 @@
+<!DOCTYPE html><html><head><style>
+body{margin:0}
+.inner{display:grid;column-gap:24px;grid-template:min-content 1fr min-content / 12.25rem minmax(0,1fr);grid-template-areas:'siteNotice siteNotice' 'columnStart pageContent' 'footer footer'}
+.a{grid-area:siteNotice;background:#eee}
+.b{grid-area:columnStart;background:#ddd}
+.c{grid-area:pageContent;background:#ccc}
+</style></head><body>
+<div class="inner"><div class="a">notice</div><div class="b">side</div><div class="c">content here</div></div>
+</body></html>
