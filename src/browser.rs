@@ -1,1347 +1,781 @@
-#![allow(dead_code)]
-//! Native window, browser chrome, input handling and navigation.
+//! The browser window: tab strip, toolbar, bookmarks bar and the active page.
 
-use std::num::NonZeroU32;
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
 
-use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{CursorIcon, Window, WindowId};
+use futures::StreamExt as _;
+use futures::channel::mpsc::{UnboundedSender, unbounded};
+use gpui_kit::assets::IconName as Icons;
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, TitleBar,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    v_flex,
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use wry::WebContext;
 
-use crate::dom::NodeId;
-use crate::fonts::FontStore;
-use crate::layout::{find_link_node, hit_test, Rect};
-use crate::page::{build_error_page, build_welcome_page, load_page_sized, Page, PageData};
-use crate::paint::{draw_text_run, render_page, Pixmap};
-use crate::style::ComputedStyle;
-use crate::util::Color;
+use crate::address;
+use crate::native;
+use crate::storage::{self, Bookmark, Session};
+use crate::tab::{PageEvent, Shortcut, Tab, TabId};
 
-pub const CHROME_H: f32 = 56.0;
+actions!(
+    aurora,
+    [
+        NewTab,
+        CloseTab,
+        ReopenClosedTab,
+        NextTab,
+        PrevTab,
+        FocusAddress,
+        Reload,
+        GoBack,
+        GoForward,
+        GoHome,
+        ToggleBookmark,
+        OpenDevTools,
+    ]
+);
 
-fn chrome_style(size: f32, color: Color) -> ComputedStyle {
-    let mut s = ComputedStyle::default();
-    s.font_size = size;
-    s.font_family = "Segoe UI".to_string();
-    s.color = color;
-    s.line_height_factor = 1.2;
-    s.line_height = size * 1.2;
-    s
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("ctrl-t", NewTab, None),
+        KeyBinding::new("ctrl-w", CloseTab, None),
+        KeyBinding::new("ctrl-f4", CloseTab, None),
+        KeyBinding::new("ctrl-shift-t", ReopenClosedTab, None),
+        KeyBinding::new("ctrl-tab", NextTab, None),
+        KeyBinding::new("ctrl-pagedown", NextTab, None),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+        KeyBinding::new("ctrl-pageup", PrevTab, None),
+        KeyBinding::new("ctrl-l", FocusAddress, None),
+        KeyBinding::new("alt-d", FocusAddress, None),
+        KeyBinding::new("f6", FocusAddress, None),
+        KeyBinding::new("f5", Reload, None),
+        KeyBinding::new("ctrl-r", Reload, None),
+        KeyBinding::new("alt-left", GoBack, None),
+        KeyBinding::new("alt-right", GoForward, None),
+        KeyBinding::new("alt-home", GoHome, None),
+        KeyBinding::new("ctrl-d", ToggleBookmark, None),
+        KeyBinding::new("f12", OpenDevTools, None),
+        KeyBinding::new("ctrl-shift-i", OpenDevTools, None),
+    ]);
 }
 
-fn button_rects() -> (Rect, Rect, Rect, Rect) {
-    let back = Rect::new(12.0, 11.0, 34.0, 34.0);
-    let fwd = Rect::new(50.0, 11.0, 34.0, 34.0);
-    let reload = Rect::new(88.0, 11.0, 34.0, 34.0);
-    let addr = Rect::new(132.0, 10.0, 1.0, 36.0); // width computed at draw time
-    (back, fwd, reload, addr)
+/// A one-line notice under the toolbar. GPUI popups would be hidden behind
+/// the native page on Windows, so notices live in the browser chrome.
+struct Notice {
+    text: String,
+    folder: Option<PathBuf>,
 }
 
-enum UserEvent {
-    Loaded(u64, Result<PageData, String>),
+pub struct Browser {
+    focus_handle: FocusHandle,
+    tabs: Vec<Tab>,
+    active: usize,
+    next_id: TabId,
+    closed: Vec<String>,
+    address: Entity<InputState>,
+    web_context: WebContext,
+    bookmarks: Rc<RefCell<Vec<Bookmark>>>,
+    events: UnboundedSender<(TabId, PageEvent)>,
+    notice: Option<Notice>,
+    _subscriptions: Vec<Subscription>,
 }
 
-struct App {
-    window: Option<Arc<Window>>,
-    context: Option<softbuffer::Context<Arc<Window>>>,
-    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
-    proxy: Option<EventLoopProxy<UserEvent>>,
+impl Browser {
+    pub fn new(start_urls: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let address = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Search Google or type a URL")
+        });
+        let subscriptions = vec![cx.subscribe_in(&address, window, Self::on_address_event)];
 
-    fonts: FontStore,
-    page: Option<Page>,
-    pixmap: Option<Pixmap>,
-    width: f32,
-    height: f32,
-    scale: f32,
-    modifiers: ModifiersState,
-
-    url_input: String,
-    editing: bool,
-    editing_select_all: bool,
-    editing_cursor: usize,
-
-    history: Vec<String>,
-    hist_index: usize,
-    generation: u64,
-    pending_history_add: bool,
-    loading: bool,
-    status: String,
-
-    scroll: f32,
-    mouse: (f32, f32),
-    hovered_button: usize,
-    hovered_node: Option<NodeId>,
-    cursor_icon: CursorIcon,
-
-    focused_input: Option<NodeId>,
-    input_cursor: usize,
-
-    initial_url: Option<String>,
-    last_frame: Instant,
-    loading_started: Instant,
-    next_js_tick: Instant,
-}
-
-pub fn run(initial_url: Option<String>) {
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let proxy = event_loop.create_proxy();
-    let mut app = App {
-        window: None,
-        context: None,
-        surface: None,
-        proxy: Some(proxy),
-        fonts: FontStore::new(),
-        page: None,
-        pixmap: None,
-        width: 1280.0,
-        height: 800.0,
-        scale: 1.0,
-        modifiers: ModifiersState::default(),
-        url_input: String::new(),
-        editing: false,
-        editing_select_all: false,
-        editing_cursor: 0,
-        history: Vec::new(),
-        hist_index: 0,
-        generation: 0,
-        pending_history_add: true,
-        loading: false,
-        status: String::new(),
-        scroll: 0.0,
-        mouse: (-1.0, -1.0),
-        hovered_button: 0,
-        hovered_node: None,
-        cursor_icon: CursorIcon::Default,
-        focused_input: None,
-        input_cursor: 0,
-        initial_url,
-        last_frame: Instant::now(),
-        loading_started: Instant::now(),
-        next_js_tick: Instant::now(),
-    };
-    event_loop.run_app(&mut app).expect("run app");
-}
-
-impl App {
-    fn viewport(&self) -> (f32, f32) {
-        ((self.width).max(100.0), (self.height - CHROME_H).max(100.0))
-    }
-
-    fn set_title(&self, loading: bool) {
-        if let Some(win) = &self.window {
-            let title = if let Some(page) = &self.page {
-                let t = if page.title().is_empty() {
-                    page.data.url.clone()
-                } else {
-                    page.title()
-                };
-                if loading {
-                    format!("Loading… — {}", t)
-                } else {
-                    format!("{} — Aurora", t)
+        let (events, mut rx) = unbounded::<(TabId, PageEvent)>();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Some((id, event)) = rx.next().await {
+                if this
+                    .update_in(cx, |this, window, cx| this.on_page_event(id, event, window, cx))
+                    .is_err()
+                {
+                    break;
                 }
-            } else if loading {
-                "Loading… — Aurora".to_string()
-            } else {
-                "Aurora".to_string()
-            };
-            win.set_title(&title);
-        }
-    }
-
-    fn request_redraw(&self) {
-        if let Some(w) = &self.window {
-            w.request_redraw();
-        }
-    }
-
-    fn load_start_page(&mut self) {
-        let data = build_welcome_page();
-        let vp = self.viewport();
-        let page = Page::new(data, &mut self.fonts, vp);
-        self.url_input = "aurora://start".to_string();
-        self.history = vec!["aurora://start".to_string()];
-        self.hist_index = 0;
-        self.focused_input = None;
-        self.scroll = 0.0;
-        self.page = Some(page);
-        self.set_title(false);
-        if let Some(u) = self.initial_url.take() {
-            self.navigate(&u, true);
-        }
-    }
-
-    fn navigate(&mut self, input: &str, add_history: bool) {
-        let input = input.trim().to_string();
-        if input.is_empty() {
-            return;
-        }
-        if input == "aurora://start" {
-            let data = build_welcome_page();
-            let vp = self.viewport();
-            let page = Page::new(data, &mut self.fonts, vp);
-            self.page = Some(page);
-            self.url_input = "aurora://start".into();
-            self.scroll = 0.0;
-            self.focused_input = None;
-            if add_history {
-                self.history.truncate(self.hist_index + 1);
-                self.history.push("aurora://start".into());
-                self.hist_index = self.history.len() - 1;
             }
-            self.set_title(false);
-            self.request_redraw();
+        })
+        .detach();
+
+        let mut this = Self {
+            focus_handle: cx.focus_handle(),
+            tabs: Vec::new(),
+            active: 0,
+            next_id: 1,
+            closed: Vec::new(),
+            address,
+            web_context: WebContext::new(Some(storage::profile_dir())),
+            bookmarks: Rc::new(RefCell::new(storage::load_bookmarks())),
+            events,
+            notice: None,
+            _subscriptions: subscriptions,
+        };
+
+        // Restore the last session unless URLs were given on the command line.
+        let (urls, active) = if !start_urls.is_empty() {
+            (start_urls, 0)
+        } else if let Some(session) = storage::load_session() {
+            let active = session.active.min(session.tabs.len() - 1);
+            (session.tabs, active)
+        } else {
+            (vec![address::NEW_TAB_URL.to_string()], 0)
+        };
+        for (i, url) in urls.iter().enumerate() {
+            this.open_tab(url, i == active, window, cx);
+        }
+        this
+    }
+
+    fn active_tab(&self) -> Option<&Tab> {
+        self.tabs.get(self.active)
+    }
+
+    fn tab_index(&self, id: TabId) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
+    }
+
+    fn raw<R>(&self, cx: &App, f: impl FnOnce(&wry::WebView) -> R) -> Option<R> {
+        self.active_tab().map(|tab| f(tab.webview.read(cx).raw()))
+    }
+
+    // ----- tabs -----------------------------------------------------------
+
+    fn open_tab(&mut self, url: &str, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.next_id;
+        self.next_id += 1;
+        let tab = Tab::new(
+            id,
+            url,
+            &mut self.web_context,
+            self.bookmarks.clone(),
+            self.events.clone(),
+            window,
+            cx,
+        );
+        let tab = match tab {
+            Ok(tab) => tab,
+            Err(err) => {
+                log::error!("could not create a WebView2 page: {err:#}");
+                self.notice = Some(Notice {
+                    text: format!(
+                        "Could not start the page engine (WebView2): {err}. \
+                         Install the WebView2 Runtime from Microsoft and restart Aurora."
+                    ),
+                    folder: None,
+                });
+                cx.notify();
+                return;
+            }
+        };
+
+        let index = if self.tabs.is_empty() { 0 } else { self.active + 1 };
+        let index = index.min(self.tabs.len());
+        if !activate {
+            tab.webview.update(cx, |w, _| w.hide());
+        }
+        self.tabs.insert(index, tab);
+        if activate {
+            self.activate(index, window, cx);
+        } else if index <= self.active && self.tabs.len() > 1 {
+            self.active += 1;
+        }
+        if activate && address::is_new_tab(url) {
+            self.focus_address(window, cx);
+        }
+        self.save_session();
+        cx.notify();
+    }
+
+    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
             return;
         }
-        self.generation += 1;
-        let gen = self.generation;
-        self.loading = true;
-        self.loading_started = Instant::now();
-        self.status = format!("Loading {}…", input);
-        self.pending_history_add = add_history;
-        self.set_title(true);
-        self.request_redraw();
-        let proxy = self.proxy.as_ref().unwrap().clone();
-        let current = self.page.as_ref().map(|p| p.data.url.clone());
-        let input_cl = input.clone();
-        let vp = self.viewport();
-        thread::spawn(move || {
-            let result = if input_cl == "aurora://start" {
-                Ok(build_welcome_page())
-            } else {
-                load_page_sized(&input_cl, current.as_deref(), vp)
-            };
-            let _ = proxy.send_event(UserEvent::Loaded(gen, result));
+        for (i, tab) in self.tabs.iter().enumerate() {
+            if i != index {
+                tab.webview.update(cx, |w, _| w.hide());
+            }
+        }
+        self.active = index;
+        let tab = &self.tabs[index];
+        tab.webview.update(cx, |w, _| w.show());
+        let url = address::display(&tab.url);
+        self.address.update(cx, |input, cx| input.set_value(url, window, cx));
+        self.update_window_title(window);
+        if !address::is_new_tab(&tab.url) {
+            let _ = tab.webview.read(cx).raw().focus();
+        }
+        self.save_session();
+        cx.notify();
+    }
+
+    fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        let tab = self.tabs.remove(index);
+        if !address::is_new_tab(&tab.url) {
+            self.closed.push(tab.url.clone());
+        }
+        // Dropping the entity removes the native page.
+        tab.webview.update(cx, |w, _| w.hide());
+        drop(tab);
+
+        if self.tabs.is_empty() {
+            self.active = 0;
+            self.open_tab(address::NEW_TAB_URL, true, window, cx);
+            return;
+        }
+        let next = if index < self.active || self.active >= self.tabs.len() {
+            self.active.saturating_sub(1)
+        } else {
+            self.active.min(self.tabs.len() - 1)
+        };
+        self.activate(next, window, cx);
+    }
+
+    fn cycle_tab(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let n = self.tabs.len() as isize;
+        if n > 1 {
+            let next = (self.active as isize + step).rem_euclid(n) as usize;
+            self.activate(next, window, cx);
+        }
+    }
+
+    /// Ctrl+1..8 picks that tab, Ctrl+9 the last one, as in other browsers.
+    fn select_tab_number(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let index = if n == 9 { self.tabs.len().saturating_sub(1) } else { n - 1 };
+        self.activate(index, window, cx);
+    }
+
+    // ----- navigation -----------------------------------------------------
+
+    fn navigate(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(url) = address::to_url(input) else {
+            return;
+        };
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        tab.url = url.clone();
+        tab.loading = true;
+        let raw = tab.webview.read(cx).raw();
+        let _ = raw.load_url(&url);
+        let _ = raw.focus();
+        self.address
+            .update(cx, |input, cx| input.set_value(address::display(&url), window, cx));
+        cx.notify();
+    }
+
+    fn focus_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.address.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
         });
     }
 
-    fn on_loaded(&mut self, gen: u64, result: Result<PageData, String>) {
-        if gen != self.generation {
+    fn toggle_bookmark(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab() else { return };
+        if address::is_new_tab(&tab.url) || tab.url.is_empty() {
             return;
         }
-        self.loading = false;
-        let vp = self.viewport();
-        let mut pending_nav: Option<String> = None;
-        match result {
-            Ok(data) => {
-                let final_url = data.url.clone();
-                let title = data.title.clone();
-                let mut page = Page::new(data, &mut self.fonts, vp);
-                pending_nav = page.take_pending_navigation();
-                self.page = Some(page);
-                self.url_input = final_url.clone();
-                self.scroll = 0.0;
-                self.focused_input = None;
-                self.hovered_node = None;
-                if self.pending_history_add {
-                    self.history.truncate(self.hist_index + 1);
-                    self.history.push(final_url);
-                    self.hist_index = self.history.len() - 1;
-                }
-                self.status = if title.is_empty() {
-                    String::new()
-                } else {
-                    format!("Loaded — {}", title)
-                };
-                self.next_js_tick = Instant::now() + Duration::from_millis(250);
-            }
-            Err(e) => {
-                let error_page = build_error_page(&self.url_input, &e);
-                let page = Page::new(error_page, &mut self.fonts, vp);
-                self.page = Some(page);
-                self.focused_input = None;
-                self.status = e;
-            }
-        }
-        self.set_title(false);
-        self.request_redraw();
-        let nav = pending_nav.or_else(|| {
-            self.page.as_ref().and_then(|p| p.meta_refresh_url())
-        });
-        if let Some(nav) = nav {
-            let current = self.page.as_ref().map(|p| p.data.url.clone()).unwrap_or_default();
-            if nav != current {
-                self.navigate(&nav, true);
-            }
-        }
-    }
-
-    fn reload(&mut self) {
-        let url = self
-            .page
-            .as_ref()
-            .map(|p| p.data.url.clone())
-            .filter(|u| u != "aurora://start")
-            .unwrap_or_else(|| self.url_input.clone());
-        if !url.is_empty() {
-            self.navigate(&url, false);
-        }
-    }
-
-    fn go_back(&mut self) {
-        if self.hist_index > 0 {
-            self.hist_index -= 1;
-            let url = self.history[self.hist_index].clone();
-            self.navigate(&url, false);
-        }
-    }
-
-    fn go_forward(&mut self) {
-        if self.hist_index + 1 < self.history.len() {
-            self.hist_index += 1;
-            let url = self.history[self.hist_index].clone();
-            self.navigate(&url, false);
-        }
-    }
-
-    fn max_scroll(&self) -> f32 {
-        if let Some(page) = &self.page {
-            (page.layout.page_height - self.viewport().1).max(0.0)
-        } else {
-            0.0
-        }
-    }
-
-    fn scroll_by(&mut self, delta: f32) {
-        let max = self.max_scroll();
-        self.scroll = (self.scroll + delta).clamp(0.0, max);
-        self.request_redraw();
-    }
-
-    fn address_rect(&self) -> Rect {
-        Rect::new(132.0, 10.0, (self.width - 144.0).max(60.0), 36.0)
-    }
-
-    fn render(&mut self) {
-        let logical_w = (self.width.max(320.0)) as usize;
-        let logical_h = (self.height.max(200.0)) as usize;
-        let mut pix = match self.pixmap.take() {
-            Some(p) => p,
-            None => Pixmap::new(logical_w, logical_h, Color::WHITE),
-        };
-        if pix.width != logical_w || pix.height != logical_h {
-            pix.resize(logical_w, logical_h, Color::WHITE);
-        }
-        pix.clear(Color::WHITE);
-
-        // Browser chrome background.
-        let toolbar = Rect::new(0.0, 0.0, logical_w as f32, CHROME_H);
-        pix.fill_rect(toolbar, Color::rgb(243, 244, 246));
-        pix.fill_rect(
-            Rect::new(0.0, CHROME_H - 1.0, logical_w as f32, 1.0),
-            Color::rgb(209, 213, 219),
-        );
-
-        // Page viewport.
-        let vp = self.viewport();
-        if let Some(page) = &mut self.page {
-            if (page.viewport.0 - vp.0).abs() > 0.5 || (page.viewport.1 - vp.1).abs() > 0.5 {
-                page.relayout(&mut self.fonts, vp);
-            }
-            let max = (page.layout.page_height - vp.1).max(0.0);
-            if self.scroll > max {
-                self.scroll = max;
-            }
-            {
-                let doc = page.dom.borrow();
-                render_page(
-                    &mut pix,
-                    &page.layout,
-                    &doc,
-                    &mut self.fonts,
-                    &page.data.images,
-                    self.scroll,
-                    CHROME_H,
-                );
-            }
-        } else {
-            pix.fill_rect(
-                Rect::new(0.0, CHROME_H, logical_w as f32, logical_h as f32 - CHROME_H),
-                Color::rgb(238, 241, 247),
-            );
-        }
-
-        self.draw_chrome(&mut pix);
-        self.draw_scrollbar(&mut pix);
-
-        // Present to the window at physical resolution.
-        if let (Some(surface), Some(window)) = (&mut self.surface, &self.window) {
-            let size = window.inner_size();
-            let (pw, ph) = (size.width.max(1), size.height.max(1));
-            let _ = surface.resize(
-                NonZeroU32::new(pw).unwrap(),
-                NonZeroU32::new(ph).unwrap(),
-            );
-            if let Ok(mut buffer) = surface.buffer_mut() {
-                let dst_w = pw as usize;
-                let dst_h = ph as usize;
-                let src_w = pix.width;
-                let src_h = pix.height;
-                if dst_w == src_w && dst_h == src_h {
-                    buffer.copy_from_slice(&pix.data);
-                } else {
-                    let sx_scale = src_w as f32 / dst_w as f32;
-                    let sy_scale = src_h as f32 / dst_h as f32;
-                    for y in 0..dst_h {
-                        let sy = ((y as f32 + 0.5) * sy_scale - 0.5).clamp(0.0, src_h as f32 - 1.0);
-                        let y0 = sy.floor() as usize;
-                        let y1 = (y0 + 1).min(src_h - 1);
-                        let fy = sy - y0 as f32;
-                        for x in 0..dst_w {
-                            let sx = ((x as f32 + 0.5) * sx_scale - 0.5).clamp(0.0, src_w as f32 - 1.0);
-                            let x0 = sx.floor() as usize;
-                            let x1 = (x0 + 1).min(src_w - 1);
-                            let fx = sx - x0 as f32;
-                            let p00 = pix.data[y0 * src_w + x0];
-                            let p10 = pix.data[y0 * src_w + x1];
-                            let p01 = pix.data[y1 * src_w + x0];
-                            let p11 = pix.data[y1 * src_w + x1];
-                            let mix = |a: u32, b: u32, c: u32, d: u32| -> u32 {
-                                let r = ((((a >> 16) & 0xFF) as f32) * (1.0 - fx) + (((b >> 16) & 0xFF) as f32) * fx) * (1.0 - fy)
-                                    + ((((c >> 16) & 0xFF) as f32) * (1.0 - fx) + (((d >> 16) & 0xFF) as f32) * fx) * fy;
-                                let g = ((((a >> 8) & 0xFF) as f32) * (1.0 - fx) + (((b >> 8) & 0xFF) as f32) * fx) * (1.0 - fy)
-                                    + ((((c >> 8) & 0xFF) as f32) * (1.0 - fx) + (((d >> 8) & 0xFF) as f32) * fx) * fy;
-                                let bl = (((a & 0xFF) as f32) * (1.0 - fx) + ((b & 0xFF) as f32) * fx) * (1.0 - fy)
-                                    + (((c & 0xFF) as f32) * (1.0 - fx) + ((d & 0xFF) as f32) * fx) * fy;
-                                ((r.round() as u32) << 16) | ((g.round() as u32) << 8) | (bl.round() as u32)
-                            };
-                            buffer[y * dst_w + x] = mix(p00, p10, p01, p11);
-                        }
-                    }
-                }
-                let _ = buffer.present();
-            }
-        }
-        self.pixmap = Some(pix);
-        self.last_frame = Instant::now();
-    }
-
-    fn draw_chrome(&mut self, pix: &mut Pixmap) {
-        let w = pix.width as f32;
-        let (back, fwd, reload, _addr) = button_rects();
-        let addr = self.address_rect();
-        let hover = self.mouse;
-        let mut draw_button = |pix: &mut Pixmap, fonts: &mut FontStore, r: Rect, label: &str, enabled: bool, hot: bool| {
-            if hot {
-                pix.fill_rounded_rect(r, 8.0, Color::rgb(226, 228, 232), Rect::new(0.0, 0.0, w, CHROME_H));
-            }
-            let color = if enabled { Color::rgb(55, 61, 70) } else { Color::rgb(176, 181, 189) };
-            let style = chrome_style(19.0, color);
-            let tw = fonts.measure_style(label, &style);
-            let (asc, desc) = fonts.line_metrics(&style);
-            let baseline = r.y + r.h / 2.0 + (asc - desc) / 2.0 - 1.0;
-            draw_text_run(
-                pix,
-                fonts,
-                label,
-                &style,
-                r.x + (r.w - tw) / 2.0,
-                baseline,
-                color,
-                Rect::new(0.0, 0.0, w, CHROME_H),
-            );
-        };
-        let back_hot = back.contains(hover.0, hover.1);
-        let fwd_hot = fwd.contains(hover.0, hover.1);
-        let reload_hot = reload.contains(hover.0, hover.1);
-        let can_back = self.hist_index > 0;
-        let can_fwd = self.hist_index + 1 < self.history.len();
+        let (url, title) = (tab.url.clone(), tab.display_title());
         {
-            let fonts = &mut self.fonts;
-            draw_button(pix, fonts, back, "←", can_back, back_hot);
-            draw_button(pix, fonts, fwd, "→", can_fwd, fwd_hot);
-            draw_button(pix, fonts, reload, "↻", true, reload_hot);
-        }
-
-        // Address bar.
-        let address_hot = addr.contains(hover.0, hover.1);
-        pix.fill_rounded_rect(addr, 9.0, Color::WHITE, Rect::new(0.0, 0.0, w, CHROME_H));
-        let border_color = if self.editing {
-            Color::rgb(64, 110, 220)
-        } else if address_hot {
-            Color::rgb(150, 160, 175)
-        } else {
-            Color::rgb(203, 209, 218)
-        };
-        // Rounded border approximation.
-        pix.stroke_rect(addr, 1.0, border_color, Rect::new(0.0, 0.0, w, CHROME_H));
-
-        let base_style = chrome_style(14.5, Color::rgb(28, 34, 44));
-        let placeholder_style = chrome_style(14.5, Color::rgb(135, 143, 156));
-        let full_clip = Rect::new(0.0, 0.0, w, CHROME_H);
-        let text_clip = Rect::new(addr.x + 30.0, addr.y + 2.0, (addr.w - 48.0).max(10.0), addr.h - 4.0);
-        // Draw a small globe-ish search icon.
-        let icon_style = chrome_style(14.0, Color::rgb(120, 128, 140));
-        {
-            let fonts = &mut self.fonts;
-            let (asc, desc) = fonts.line_metrics(&base_style);
-            let baseline = addr.y + addr.h / 2.0 + (asc - desc) / 2.0 - 1.0;
-            draw_text_run(pix, fonts, "⌕", &icon_style, addr.x + 10.0, baseline, icon_style.color, full_clip);
-            let text = if self.editing {
-                self.url_input.clone()
-            } else if self.url_input == "aurora://start" {
-                String::new()
+            let mut bookmarks = self.bookmarks.borrow_mut();
+            if let Some(pos) = bookmarks.iter().position(|b| b.url == url) {
+                bookmarks.remove(pos);
             } else {
-                self.url_input.clone()
-            };
-            let (display, style) = if text.is_empty() {
-                ("Search or enter address".to_string(), &placeholder_style)
-            } else {
-                (text, &base_style)
-            };
-            let mut offset = 0.0;
-            if self.editing {
-                let chars: Vec<char> = display.chars().collect();
-                let upto: String = chars[..self.editing_cursor.min(chars.len())].iter().collect();
-                let caret_x = fonts.measure_style(&upto, &base_style);
-                if caret_x > text_clip.w {
-                    offset = caret_x - text_clip.w;
-                }
+                bookmarks.push(Bookmark { title, url });
             }
-            draw_text_run(pix, fonts, &display, style, text_clip.x - offset, baseline, style.color, text_clip);
-            if self.editing {
-                let chars: Vec<char> = display.chars().collect();
-                let upto: String = chars[..self.editing_cursor.min(chars.len())].iter().collect();
-                let caret_x = text_clip.x - offset + fonts.measure_style(&upto, &base_style);
-                pix.fill_rect(
-                    Rect::new(caret_x.round(), addr.y + 8.0, 1.0, addr.h - 16.0),
-                    Color::rgb(30, 40, 60),
-                );
-            }
-            if self.loading {
-                let load_style = chrome_style(12.0, Color::rgb(100, 108, 120));
-                draw_text_run(
-                    pix,
-                    fonts,
-                    "Loading…",
-                    &load_style,
-                    addr.right() - 62.0,
-                    baseline,
-                    load_style.color,
-                    full_clip,
-                );
-            }
+            storage::save_bookmarks(&bookmarks);
         }
-        // Loading progress bar along the bottom edge.
-        if self.loading {
-            let elapsed = self.loading_started.elapsed().as_secs_f32();
-            let progress = (elapsed / 2.5).min(0.94);
-            pix.fill_rect(
-                Rect::new(0.0, CHROME_H - 2.0, w * progress, 2.0),
-                Color::rgb(70, 110, 220),
-            );
-        }
+        cx.notify();
     }
 
-    fn draw_scrollbar(&mut self, pix: &mut Pixmap) {
-        let page = match &self.page {
-            Some(p) => p,
-            None => return,
+    fn is_bookmarked(&self, url: &str) -> bool {
+        self.bookmarks.borrow().iter().any(|b| b.url == url)
+    }
+
+    fn save_session(&self) {
+        let tabs = self.tabs.iter().map(|t| t.url.clone()).collect();
+        storage::save_session(&Session { tabs, active: self.active });
+    }
+
+    fn update_window_title(&self, window: &mut Window) {
+        let title = match self.active_tab() {
+            Some(tab) => format!("{} - Aurora", tab.display_title()),
+            None => "Aurora".into(),
         };
-        let vp_h = self.viewport().1;
-        let page_h = page.layout.page_height;
-        if page_h <= vp_h + 1.0 {
-            return;
-        }
-        let h = pix.height as f32;
-        let w = pix.width as f32;
-        let track_y = CHROME_H + 4.0;
-        let track_h = h - CHROME_H - 8.0;
-        let thumb_h = (vp_h / page_h * track_h).max(30.0);
-        let max_scroll = page_h - vp_h;
-        let frac = if max_scroll > 0.0 { (self.scroll / max_scroll).clamp(0.0, 1.0) } else { 0.0 };
-        let thumb_y = track_y + frac * (track_h - thumb_h);
-        pix.fill_rounded_rect(
-            Rect::new(w - 9.0, thumb_y, 6.0, thumb_h),
-            3.0,
-            Color::rgba(120, 126, 136, 150),
-            Rect::new(0.0, CHROME_H, w, h - CHROME_H),
-        );
+        window.set_window_title(&title);
     }
 
-    fn page_coords(&self) -> (f32, f32) {
-        (self.mouse.0, self.mouse.1 - CHROME_H + self.scroll)
-    }
+    // ----- events ---------------------------------------------------------
 
-    fn node_at(&self, x: f32, y: f32) -> Option<NodeId> {
-        let page = self.page.as_ref()?;
-        hit_test(&page.layout.root, x, y)
-    }
-
-    fn ancestor_with_tag(&self, node: NodeId, tags: &[&str]) -> Option<NodeId> {
-        let page = self.page.as_ref()?;
-        let mut cur = Some(node);
-        let doc = page.dom.borrow();
-        while let Some(n) = cur {
-            if let Some(t) = doc.tag(n) {
-                if tags.contains(&t) {
-                    return Some(n);
-                }
-            }
-            cur = doc.nodes[n].parent;
-        }
-        None
-    }
-
-    fn update_hover(&mut self) {
-        let (px, py) = self.page_coords();
-        let mut new_hover = None;
-        let mut new_icon = CursorIcon::Default;
-        let mut new_button = 0;
-        if self.mouse.1 < CHROME_H {
-            let (back, fwd, reload, _) = button_rects();
-            let addr = self.address_rect();
-            if back.contains(self.mouse.0, self.mouse.1) {
-                new_button = 1;
-                new_icon = CursorIcon::Pointer;
-            } else if fwd.contains(self.mouse.0, self.mouse.1) {
-                new_button = 2;
-                new_icon = CursorIcon::Pointer;
-            } else if reload.contains(self.mouse.0, self.mouse.1) {
-                new_button = 3;
-                new_icon = CursorIcon::Pointer;
-            } else if addr.contains(self.mouse.0, self.mouse.1) {
-                new_icon = CursorIcon::Text;
-            }
-        } else if let Some(page) = &self.page {
-            if py >= 0.0 && py <= page.layout.page_height + 200.0 {
-                if let Some(node) = hit_test(&page.layout.root, px, py) {
-                    new_hover = Some(node);
-                    if find_link_node(&page.dom.borrow(), node).is_some() {
-                        new_icon = CursorIcon::Pointer;
-                    } else if self
-                        .ancestor_with_tag(node, &["input", "textarea", "select"])
-                        .is_some()
-                    {
-                        new_icon = CursorIcon::Text;
-                    }
-                }
-            }
-        }
-        self.hovered_button = new_button;
-        if let Some(win) = &self.window {
-            if new_icon != self.cursor_icon {
-                self.cursor_icon = new_icon;
-                win.set_cursor(new_icon);
-            }
-        }
-        if new_hover != self.hovered_node {
-            self.hovered_node = new_hover;
-            let vp = self.viewport();
-            let (page_opt, fonts) = (&mut self.page, &mut self.fonts);
-            if let Some(page) = page_opt {
-                page.set_hover(fonts, new_hover);
-            }
-            let _ = vp;
-        }
-    }
-
-    fn click_toolbar(&mut self, x: f32, y: f32) {
-        let (back, fwd, reload, _) = button_rects();
-        let addr = self.address_rect();
-        if back.contains(x, y) {
-            self.go_back();
-        } else if fwd.contains(x, y) {
-            self.go_forward();
-        } else if reload.contains(x, y) {
-            self.reload();
-        } else if addr.contains(x, y) {
-            self.editing = true;
-            self.editing_select_all = true;
-            self.editing_cursor = self.url_input.chars().count();
-            self.focused_input = None;
-            self.request_redraw();
-        }
-    }
-
-    fn click_page(&mut self, x: f32, y: f32) {
-        let scroll = self.scroll;
-        let (px, py) = (x, y - CHROME_H + scroll);
-        let node = self.node_at(px, py);
-        let node = match node {
-            Some(n) => n,
-            None => {
-                self.blur_input();
-                return;
-            }
-        };
-        // Let page scripts see the click first.
-        let prevented = {
-            let vp = self.viewport();
-            let (page_opt, fonts) = (&mut self.page, &mut self.fonts);
-            if let Some(page) = page_opt {
-                let prevented = page.dispatch_js(Some(node), "click");
-                if page.take_js_changed() {
-                    page.relayout(fonts, vp);
-                }
-                prevented
-            } else {
-                false
-            }
-        };
-        if prevented {
-            self.set_title(false);
-            self.request_redraw();
-            return;
-        }
-        let pending = self
-            .page
-            .as_mut()
-            .and_then(|p| p.take_pending_navigation());
-        if let Some(url) = pending {
-            self.navigate(&url, true);
-            return;
-        }
-        // Submit buttons / inputs.
-        let submit = {
-            let page = match &self.page {
-                Some(p) => p,
-                None => return,
-            };
-            let doc = page.dom.borrow();
-            let mut form = None;
-            if doc.tag(node) == Some("button") {
-                let ty = doc.attr(node, "type").unwrap_or("submit").to_ascii_lowercase();
-                if ty == "submit" {
-                    form = page.ancestor_tag(node, "form");
-                }
-            } else if doc.tag(node) == Some("input") {
-                let ty = doc.attr(node, "type").unwrap_or("text").to_ascii_lowercase();
-                if ty == "submit" || ty == "image" {
-                    form = page.ancestor_tag(node, "form");
-                }
-            }
-            form.and_then(|f| page.form_submit_url(f))
-        };
-        if let Some(url) = submit {
-            self.navigate(&url, true);
-            return;
-        }
-        // Links.
-        let link_target = if let Some(page) = &self.page {
-            let doc = page.dom.borrow();
-            find_link_node(&doc, node).and_then(|link| page.link_href(link))
-        } else {
-            None
-        };
-        if let Some(href) = link_target {
-            if href.starts_with('#') {
-                self.scroll_to_anchor(&href[1..]);
-                return;
-            }
-            self.navigate(&href, true);
-            return;
-        }
-        // Form controls.
-        if let Some(input) = self.ancestor_with_tag(node, &["input"]) {
-            let itype = self
-                .page
-                .as_ref()
-                .and_then(|p| p.dom.borrow().attr(input, "type").map(|t| t.to_ascii_lowercase()))
-                .unwrap_or_else(|| "text".to_string());
-            if itype == "checkbox" || itype == "radio" {
-                self.toggle_checkbox(input);
-                return;
-            }
-            self.focus_input(input);
-            return;
-        }
-        if let Some(area) = self.ancestor_with_tag(node, &["textarea"]) {
-            self.focus_input(area);
-            return;
-        }
-        if let Some(sel) = self.ancestor_with_tag(node, &["select"]) {
-            self.cycle_select(sel);
-            return;
-        }
-        if self.ancestor_with_tag(node, &["button"]).is_some() {
-            return;
-        }
-        self.blur_input();
-    }
-
-    fn scroll_to_anchor(&mut self, id: &str) {
-        let target = self
-            .page
-            .as_ref()
-            .and_then(|p| p.dom.borrow().find_by_id(id));
-        if let Some(node) = target {
-            if let Some(page) = &self.page {
-                if let Some(rect) = find_box_rect(&page.layout.root, node) {
-                    let max = self.max_scroll();
-                    self.scroll = (rect.y - 8.0).clamp(0.0, max);
-                    self.request_redraw();
-                    return;
-                }
-            }
-        }
-    }
-
-    fn focus_input(&mut self, node: NodeId) {
-        self.focused_input = Some(node);
-        self.editing = false;
-        let value = self
-            .page
-            .as_ref()
-            .and_then(|p| p.dom.borrow().attr(node, "value").map(|s| s.to_string()))
-            .unwrap_or_default();
-        self.input_cursor = value.chars().count();
-        let vp = self.viewport();
-        let (page_opt, fonts) = (&mut self.page, &mut self.fonts);
-        if let Some(page) = page_opt {
-            page.dispatch_js(Some(node), "focus");
-            page.set_focused(fonts, Some(node));
-            let _ = vp;
-        }
-        self.request_redraw();
-    }
-
-    fn blur_input(&mut self) {
-        if self.focused_input.is_some() {
-            let node = self.focused_input.take();
-            let vp = self.viewport();
-            if let Some(node) = node {
-                if let Some(page) = &mut self.page {
-                    page.dispatch_js(Some(node), "change");
-                    page.dispatch_js(Some(node), "blur");
-                }
-            }
-            let (page_opt, fonts) = (&mut self.page, &mut self.fonts);
-            if let Some(page) = page_opt {
-                page.set_focused(fonts, None);
-                let _ = vp;
-            }
-            self.request_redraw();
-        }
-    }
-
-    fn toggle_checkbox(&mut self, node: NodeId) {
-        let checked = self
-            .page
-            .as_ref()
-            .and_then(|p| p.dom.borrow().attr(node, "checked").map(|_| true))
-            .unwrap_or(false);
-        if let Some(page) = &mut self.page {
-            {
-                let mut doc = page.dom.borrow_mut();
-                if checked {
-                    doc.remove_attr(node, "checked");
-                } else {
-                    doc.set_attr(node, "checked", "");
-                }
-            }
-            let vp = self.viewport();
-            let (page_opt, fonts) = (&mut self.page, &mut self.fonts);
-            if let Some(page) = page_opt {
-                page.relayout(fonts, vp);
-            }
-        }
-        self.request_redraw();
-    }
-
-    fn cycle_select(&mut self, node: NodeId) {
-        let options: Vec<(NodeId, String)> = {
-            let page = match &self.page {
-                Some(p) => p,
-                None => return,
-            };
-            let doc = page.dom.borrow();
-            doc.nodes[node]
-                .children
-                .iter()
-                .filter(|&&c| doc.tag(c) == Some("option"))
-                .map(|&c| {
-                    let text = doc.text_content(c).trim().to_string();
-                    (c, text)
-                })
-                .collect()
-        };
-        if options.is_empty() {
-            return;
-        }
-        if let Some(page) = &mut self.page {
-            {
-                let mut doc = page.dom.borrow_mut();
-                let mut current = 0;
-                for (i, (c, _)) in options.iter().enumerate() {
-                    if doc.attr(*c, "selected").is_some() {
-                        current = i;
-                    }
-                }
-                let next = (current + 1) % options.len();
-                for (i, (c, _)) in options.iter().enumerate() {
-                    if i == next {
-                        doc.set_attr(*c, "selected", "");
-                    } else {
-                        doc.remove_attr(*c, "selected");
-                    }
-                }
-            }
-            let vp = self.viewport();
-            let (page_opt, fonts) = (&mut self.page, &mut self.fonts);
-            if let Some(page) = page_opt {
-                page.relayout(fonts, vp);
-            }
-        }
-        self.request_redraw();
-    }
-
-    fn type_into_input(&mut self, text: &str) {
-        let node = match self.focused_input {
-            Some(n) => n,
-            None => return,
-        };
-        let is_textarea = self
-            .page
-            .as_ref()
-            .and_then(|p| p.dom.borrow().tag(node).map(|t| t == "textarea"))
-            .unwrap_or(false);
-        if let Some(page) = &mut self.page {
-            {
-                let mut doc = page.dom.borrow_mut();
-                if is_textarea {
-                    let value = doc.text_content(node);
-                    self.input_cursor = self.input_cursor.min(value.chars().count());
-                    let mut chars: Vec<char> = value.chars().collect();
-                    let mut insert_at = self.input_cursor.min(chars.len());
-                    for c in text.chars() {
-                        if c == '\r' {
-                            continue;
-                        }
-                        chars.insert(insert_at, c);
-                        insert_at += 1;
-                    }
-                    let new_value: String = chars.into_iter().collect();
-                    doc.set_text_content(node, &new_value);
-                    self.input_cursor = insert_at;
-                } else {
-                    let value = doc.attr(node, "value").unwrap_or("").to_string();
-                    let mut chars: Vec<char> = value.chars().collect();
-                    self.input_cursor = self.input_cursor.min(chars.len());
-                    let mut insert_at = self.input_cursor;
-                    for c in text.chars() {
-                        if c == '\r' || c == '\n' {
-                            continue;
-                        }
-                        chars.insert(insert_at, c);
-                        insert_at += 1;
-                    }
-                    let new_value: String = chars.into_iter().collect();
-                    doc.set_attr(node, "value", &new_value);
-                    self.input_cursor = insert_at;
-                }
-            }
-            let vp = self.viewport();
-            let (page_opt, fonts) = (&mut self.page, &mut self.fonts);
-            if let Some(page) = page_opt {
-                page.dispatch_js(Some(node), "input");
-                page.relayout(fonts, vp);
-            }
-        }
-        self.request_redraw();
-    }
-
-    fn backspace_input(&mut self) {
-        let node = match self.focused_input {
-            Some(n) => n,
-            None => return,
-        };
-        let is_textarea = self
-            .page
-            .as_ref()
-            .and_then(|p| p.dom.borrow().tag(node).map(|t| t == "textarea"))
-            .unwrap_or(false);
-        if let Some(page) = &mut self.page {
-            {
-                let mut doc = page.dom.borrow_mut();
-                if is_textarea {
-                    let value = doc.text_content(node);
-                    let mut chars: Vec<char> = value.chars().collect();
-                    if !chars.is_empty() {
-                        chars.pop();
-                    }
-                    let new_value: String = chars.into_iter().collect();
-                    doc.set_text_content(node, &new_value);
-                    self.input_cursor = new_value.chars().count();
-                } else {
-                    let value = doc.attr(node, "value").unwrap_or("").to_string();
-                    let mut chars: Vec<char> = value.chars().collect();
-                    if !chars.is_empty() {
-                        chars.pop();
-                    }
-                    let new_value: String = chars.into_iter().collect();
-                    doc.set_attr(node, "value", &new_value);
-                    self.input_cursor = new_value.chars().count();
-                }
-            }
-            let vp = self.viewport();
-            let (page_opt, fonts) = (&mut self.page, &mut self.fonts);
-            if let Some(page) = page_opt {
-                page.dispatch_js(Some(node), "input");
-                page.relayout(fonts, vp);
-            }
-        }
-        self.request_redraw();
-    }
-
-    fn on_key(&mut self, event: &winit::event::KeyEvent) {
-        let mods = self.modifiers;
-        let ctrl = mods.control_key();
-        let alt = mods.alt_key();
-        let shift = mods.shift_key();
-        let key = &event.logical_key;
-        if ctrl {
-            match key {
-                Key::Character(s) => match s.to_ascii_lowercase().as_str() {
-                    "l" => {
-                        self.editing = true;
-                        self.editing_select_all = true;
-                        self.editing_cursor = self.url_input.chars().count();
-                        self.focused_input = None;
-                        self.request_redraw();
-                        return;
-                    }
-                    "r" => {
-                        self.reload();
-                        return;
-                    }
-                    "a" if self.editing => {
-                        self.editing_select_all = true;
-                        self.request_redraw();
-                        return;
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        }
-        if alt && matches!(key, Key::Named(NamedKey::ArrowLeft)) {
-            self.go_back();
-            return;
-        }
-        if alt && matches!(key, Key::Named(NamedKey::ArrowRight)) {
-            self.go_forward();
-            return;
-        }
-        match key {
-            Key::Named(NamedKey::F5) => {
-                self.reload();
-                return;
-            }
-            Key::Named(NamedKey::Escape) => {
-                if self.editing {
-                    self.editing = false;
-                } else {
-                    self.blur_input();
-                }
-                self.request_redraw();
-                return;
-            }
-            _ => {}
-        }
-        if self.editing {
-            match key {
-                Key::Named(NamedKey::Enter) => {
-                    let input = self.url_input.clone();
-                    self.editing = false;
-                    self.editing_select_all = false;
-                    self.navigate(&input, true);
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    let mut chars: Vec<char> = self.url_input.chars().collect();
-                    if self.editing_select_all {
-                        chars.clear();
-                        self.editing_select_all = false;
-                    } else if self.editing_cursor > 0 && self.editing_cursor <= chars.len() {
-                        chars.remove(self.editing_cursor - 1);
-                        self.editing_cursor -= 1;
-                    }
-                    self.url_input = chars.into_iter().collect();
-                    self.request_redraw();
-                }
-                Key::Named(NamedKey::Delete) => {
-                    let mut chars: Vec<char> = self.url_input.chars().collect();
-                    if self.editing_cursor < chars.len() {
-                        chars.remove(self.editing_cursor);
-                    }
-                    self.url_input = chars.into_iter().collect();
-                    self.request_redraw();
-                }
-                Key::Named(NamedKey::ArrowLeft) => {
-                    self.editing_cursor = self.editing_cursor.saturating_sub(1);
-                    self.request_redraw();
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    self.editing_cursor =
-                        (self.editing_cursor + 1).min(self.url_input.chars().count());
-                    self.request_redraw();
-                }
-                Key::Named(NamedKey::Home) => {
-                    self.editing_cursor = 0;
-                    self.request_redraw();
-                }
-                Key::Named(NamedKey::End) => {
-                    self.editing_cursor = self.url_input.chars().count();
-                    self.request_redraw();
-                }
-                _ => {
-                    if let Some(text) = &event.text {
-                        let mut inserted = false;
-                        let chars: Vec<char> = text.chars().collect();
-                        if ctrl {
-                            return;
-                        }
-                        if self.editing_select_all {
-                            self.url_input.clear();
-                            self.editing_cursor = 0;
-                            self.editing_select_all = false;
-                        }
-                        let mut current: Vec<char> = self.url_input.chars().collect();
-                        let mut cursor = self.editing_cursor.min(current.len());
-                        for c in chars {
-                            if c.is_control() {
-                                continue;
-                            }
-                            current.insert(cursor, c);
-                            cursor += 1;
-                            inserted = true;
-                        }
-                        if inserted {
-                            self.url_input = current.into_iter().collect();
-                            self.editing_cursor = cursor;
-                        }
-                        if inserted {
-                            self.request_redraw();
-                        }
-                    }
-                }
-            }
-            return;
-        }
-        if self.focused_input.is_some() {
-            match key {
-                Key::Named(NamedKey::Enter) => {
-                    let submit = self.focused_input.and_then(|node| {
-                        let page = self.page.as_ref()?;
-                        let form = page.ancestor_tag(node, "form")?;
-                        page.form_submit_url(form)
-                    });
-                    if let Some(url) = submit {
-                        self.navigate(&url, true);
-                    } else {
-                        self.blur_input();
-                    }
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.backspace_input();
-                }
-                _ => {
-                    if let Some(text) = &event.text {
-                        if !ctrl && !alt {
-                            let filtered: String = text.chars().filter(|c| !c.is_control() || *c == ' ').collect();
-                            if !filtered.is_empty() {
-                                self.type_into_input(&filtered);
-                            }
-                        }
-                    }
-                }
-            }
-            return;
-        }
-        // Page keyboard scrolling.
-        match key {
-            Key::Named(NamedKey::ArrowDown) => self.scroll_by(50.0),
-            Key::Named(NamedKey::ArrowUp) => self.scroll_by(-50.0),
-            Key::Named(NamedKey::PageDown) | Key::Named(NamedKey::Space) => {
-                self.scroll_by(self.viewport().1 * 0.9)
-            }
-            Key::Named(NamedKey::PageUp) => self.scroll_by(-self.viewport().1 * 0.9),
-            Key::Named(NamedKey::Home) => {
-                self.scroll = 0.0;
-                self.request_redraw();
-            }
-            Key::Named(NamedKey::End) => {
-                self.scroll = self.max_scroll();
-                self.request_redraw();
-            }
-            Key::Named(NamedKey::ArrowRight) => self.scroll_by(40.0),
-            Key::Named(NamedKey::ArrowLeft) => self.scroll_by(-40.0),
-            _ => {}
-        }
-        let _ = shift;
-    }
-}
-
-fn chars_len(s: &str) -> usize {
-    s.chars().count()
-}
-
-fn find_box_rect(b: &crate::layout::LayoutBox, node: NodeId) -> Option<Rect> {
-    if b.node == node {
-        return Some(b.rect);
-    }
-    for c in &b.children {
-        if let Some(r) = find_box_rect(c, node) {
-            return Some(r);
-        }
-    }
-    None
-}
-
-impl ApplicationHandler<UserEvent> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
-        let attrs = Window::default_attributes()
-            .with_title("Aurora")
-            .with_inner_size(LogicalSize::new(1280.0, 820.0))
-            .with_min_inner_size(LogicalSize::new(480.0, 320.0));
-        let window = match event_loop.create_window(attrs) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                eprintln!("Failed to create window: {}", e);
-                event_loop.exit();
-                return;
-            }
-        };
-        let context = match softbuffer::Context::new(window.clone()) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Failed to create drawing context: {}", e);
-                event_loop.exit();
-                return;
-            }
-        };
-        let surface = match softbuffer::Surface::new(&context, window.clone()) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Failed to create surface: {}", e);
-                event_loop.exit();
-                return;
-            }
-        };
-        let scale = window.scale_factor() as f32;
-        let size = window.inner_size();
-        self.width = size.width as f32 / scale;
-        self.height = size.height as f32 / scale;
-        self.scale = scale;
-        self.context = Some(context);
-        self.surface = Some(surface);
-        self.window = Some(window);
-        self.load_start_page();
-        self.request_redraw();
-    }
-
-    fn window_event(
+    fn on_address_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                self.width = size.width as f32 / self.scale;
-                self.height = size.height as f32 / self.scale;
-                self.request_redraw();
+            InputEvent::PressEnter { .. } => {
+                let text = input.read(cx).value().to_string();
+                self.navigate(&text, window, cx);
             }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.scale = scale_factor as f32;
-                if let Some(win) = &self.window {
-                    let size = win.inner_size();
-                    self.width = size.width as f32 / self.scale;
-                    self.height = size.height as f32 / self.scale;
-                }
-                self.request_redraw();
+            InputEvent::Focus => {
+                input.update(cx, |input, cx| input.select_all(window, cx));
             }
-            WindowEvent::RedrawRequested => {
-                self.render();
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    self.on_key(&event);
+            InputEvent::Blur => {
+                // Put the real address back if the user typed and walked away.
+                if let Some(url) = self.active_tab().map(|t| address::display(&t.url)) {
+                    input.update(cx, |input, cx| input.set_value(url, window, cx));
                 }
             }
-            WindowEvent::ModifiersChanged(mods) => {
-                self.modifiers = mods.state();
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.mouse = (
-                    position.x as f32 / self.scale,
-                    position.y as f32 / self.scale,
-                );
-                self.update_hover();
-                self.request_redraw();
-            }
-            WindowEvent::CursorLeft { .. } => {
-                self.mouse = (-1.0, -1.0);
-                self.update_hover();
-                self.request_redraw();
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if state == ElementState::Pressed && button == MouseButton::Left {
-                    let (x, y) = self.mouse;
-                    if y < CHROME_H {
-                        self.click_toolbar(x, y);
-                    } else {
-                        self.click_page(x, y);
-                    }
-                    self.request_redraw();
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y * 48.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / self.scale,
-                };
-                self.scroll_by(-dy);
-            }
-            _ => {}
+            InputEvent::Change => {}
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn on_page_event(&mut self, id: TabId, event: PageEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(id) else { return };
+        let is_active = index == self.active;
+        let mut url_changed = false;
         match event {
-            UserEvent::Loaded(gen, result) => self.on_loaded(gen, result),
-        }
-    }
-
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.loading {
-            if let Some(win) = &self.window {
-                win.request_redraw();
+            PageEvent::TitleChanged(title) => self.tabs[index].title = title,
+            PageEvent::LoadStarted(url) => {
+                let tab = &mut self.tabs[index];
+                tab.loading = true;
+                url_changed = tab.url != url;
+                tab.url = url;
             }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(80),
-            ));
-            return;
-        }
-        let has_timers = self.page.as_ref().map(|p| p.has_js_timers()).unwrap_or(false);
-        if has_timers && Instant::now() >= self.next_js_tick {
-            self.next_js_tick = Instant::now() + Duration::from_millis(250);
-            let changed = {
-                let (page_opt, fonts) = (&mut self.page, &mut self.fonts);
-                if let Some(page) = page_opt {
-                    page.js_tick(fonts)
-                } else {
-                    false
+            PageEvent::LoadFinished(url) => {
+                let tab = &mut self.tabs[index];
+                tab.loading = false;
+                url_changed = tab.url != url;
+                tab.url = url;
+            }
+            PageEvent::UrlMaybeChanged => {
+                let tab = &mut self.tabs[index];
+                if let Ok(url) = tab.webview.read(cx).raw().url() {
+                    url_changed = tab.url != url;
+                    tab.url = url;
                 }
-            };
-            if changed {
-                self.set_title(false);
-                self.request_redraw();
             }
-            if self.page.as_ref().map(|p| p.has_js_timers()).unwrap_or(false) {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_js_tick));
+            PageEvent::OpenInNewTab(url) => {
+                self.open_tab(&url, true, window, cx);
                 return;
             }
+            PageEvent::Shortcut(shortcut) => {
+                self.on_shortcut(shortcut, window, cx);
+                return;
+            }
+            PageEvent::DownloadStarted(path) => {
+                let name = file_name(Some(&path));
+                self.notice = Some(Notice { text: format!("Downloading {name}…"), folder: None });
+            }
+            PageEvent::DownloadFinished { path, success } => {
+                let name = file_name(path.as_ref());
+                self.notice = Some(if success {
+                    Notice {
+                        text: format!("Downloaded {name}"),
+                        folder: path
+                            .and_then(|p| p.parent().map(PathBuf::from))
+                            .or_else(|| Some(storage::downloads_dir())),
+                    }
+                } else {
+                    Notice { text: format!("Download failed: {name}"), folder: None }
+                });
+            }
         }
-        event_loop.set_control_flow(ControlFlow::Wait);
+
+        if url_changed {
+            self.save_session();
+        }
+        if is_active {
+            let editing = self.address.read(cx).focus_handle(cx).is_focused(window);
+            if url_changed && !editing {
+                let url = address::display(&self.tabs[index].url);
+                self.address.update(cx, |input, cx| input.set_value(url, window, cx));
+            }
+            self.update_window_title(window);
+        }
+        cx.notify();
     }
+
+    fn on_shortcut(&mut self, shortcut: Shortcut, window: &mut Window, cx: &mut Context<Self>) {
+        match shortcut {
+            Shortcut::NewTab => self.open_tab(address::NEW_TAB_URL, true, window, cx),
+            Shortcut::CloseTab => self.close_tab(self.active, window, cx),
+            Shortcut::ReopenClosedTab => self.reopen_closed_tab(window, cx),
+            Shortcut::NextTab => self.cycle_tab(1, window, cx),
+            Shortcut::PrevTab => self.cycle_tab(-1, window, cx),
+            Shortcut::SelectTab(n) => self.select_tab_number(n, window, cx),
+            Shortcut::FocusAddress => {
+                // Move keyboard focus from the native page back to GPUI first.
+                if let Some(tab) = self.active_tab() {
+                    let _ = tab.webview.read(cx).raw().focus_parent();
+                }
+                self.focus_address(window, cx);
+            }
+            Shortcut::ToggleBookmark => self.toggle_bookmark(cx),
+        }
+    }
+
+    fn reopen_closed_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(url) = self.closed.pop() {
+            self.open_tab(&url, true, window, cx);
+        }
+    }
+
+    // ----- rendering ------------------------------------------------------
+
+    fn render_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (active_bg, hover_bg, fg, muted) =
+            (theme.background, theme.secondary_hover, theme.foreground, theme.muted_foreground);
+
+        h_flex()
+            .id("tabs")
+            .h_full()
+            .flex_1()
+            .min_w_0()
+            .items_end()
+            .gap_1()
+            .pl_1()
+            .overflow_x_hidden()
+            .children(self.tabs.iter().enumerate().map(|(i, tab)| {
+                let selected = i == self.active;
+                let title = tab.display_title();
+                h_flex()
+                    .id(("tab", tab.id))
+                    .group("tab")
+                    .h(px(30.))
+                    .min_w(px(60.))
+                    .max_w(px(220.))
+                    .flex_1()
+                    .px_2()
+                    .gap_1p5()
+                    .items_center()
+                    .rounded_t_md()
+                    .text_sm()
+                    .cursor_pointer()
+                    .when(selected, |el| el.bg(active_bg).text_color(fg))
+                    .when(!selected, |el| el.text_color(muted).hover(|el| el.bg(hover_bg)))
+                    .on_click(cx.listener(move |this, _, window, cx| this.activate(i, window, cx)))
+                    .on_mouse_down(
+                        MouseButton::Middle,
+                        cx.listener(move |this, _, window, cx| this.close_tab(i, window, cx)),
+                    )
+                    .child(if tab.loading {
+                        Icon::new(IconName::LoaderCircle)
+                            .size_3p5()
+                            .flex_shrink_0()
+                            .with_animation(
+                                ("spin", tab.id),
+                                Animation::new(std::time::Duration::from_millis(900)).repeat(),
+                                |icon, t| icon.transform(Transformation::rotate(percentage(t))),
+                            )
+                            .into_any_element()
+                    } else {
+                        Icon::new(IconName::Globe).size_3p5().flex_shrink_0().into_any_element()
+                    })
+                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .child(
+                        Button::new(("close-tab", tab.id))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip("Close tab (Ctrl+W)")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_tab(i, window, cx);
+                            })),
+                    )
+            }))
+            .child(
+                div().pb_1().child(
+                    Button::new("new-tab")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Plus)
+                        .tooltip("New tab (Ctrl+T)")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_tab(address::NEW_TAB_URL, true, window, cx)
+                        })),
+                ),
+            )
+    }
+
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (can_back, can_forward) = self
+            .raw(cx, |w| (native::can_go_back(w), native::can_go_forward(w)))
+            .unwrap_or((false, false));
+        let tab = self.active_tab();
+        let loading = tab.is_some_and(|t| t.loading);
+        let url = tab.map(|t| t.url.clone()).unwrap_or_default();
+        let bookmarked = self.is_bookmarked(&url);
+        let can_bookmark = !url.is_empty() && !address::is_new_tab(&url);
+
+        let site_icon: AnyElement = if address::is_new_tab(&url) || url.is_empty() {
+            Icon::new(IconName::Search).size_4().into_any_element()
+        } else if address::is_secure(&url) {
+            Icon::new(Icons::Lock).size_4().into_any_element()
+        } else {
+            Icon::new(IconName::Info).size_4().into_any_element()
+        };
+
+        h_flex()
+            .h(px(44.))
+            .px_2()
+            .gap_1()
+            .items_center()
+            .bg(cx.theme().background)
+            .child(
+                Button::new("back")
+                    .ghost()
+                    .icon(IconName::ArrowLeft)
+                    .tooltip("Back (Alt+Left)")
+                    .disabled(!can_back)
+                    .on_click(cx.listener(|this, _, w, cx| this.go_back(&GoBack, w, cx))),
+            )
+            .child(
+                Button::new("forward")
+                    .ghost()
+                    .icon(IconName::ArrowRight)
+                    .tooltip("Forward (Alt+Right)")
+                    .disabled(!can_forward)
+                    .on_click(cx.listener(|this, _, w, cx| this.go_forward(&GoForward, w, cx))),
+            )
+            .child(if loading {
+                Button::new("stop")
+                    .ghost()
+                    .icon(IconName::Close)
+                    .tooltip("Stop loading")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.raw(cx, native::stop);
+                        if let Some(tab) = this.tabs.get_mut(this.active) {
+                            tab.loading = false;
+                        }
+                        cx.notify();
+                    }))
+            } else {
+                Button::new("reload")
+                    .ghost()
+                    .icon(IconName::RotateCw)
+                    .tooltip("Reload (F5)")
+                    .on_click(cx.listener(|this, _, w, cx| this.reload(&Reload, w, cx)))
+            })
+            .child(
+                Button::new("home")
+                    .ghost()
+                    .icon(Icons::House)
+                    .tooltip("New tab page (Alt+Home)")
+                    .on_click(cx.listener(|this, _, w, cx| this.go_home(&GoHome, w, cx))),
+            )
+            .child(
+                div().flex_1().min_w_0().px_1().child(
+                    Input::new(&self.address)
+                        .prefix(div().text_color(cx.theme().muted_foreground).child(site_icon))
+                        .suffix(
+                            Button::new("bookmark")
+                                .ghost()
+                                .xsmall()
+                                .icon(if bookmarked { IconName::StarFill } else { IconName::Star })
+                                .tooltip(if bookmarked {
+                                    "Remove bookmark (Ctrl+D)"
+                                } else {
+                                    "Bookmark this page (Ctrl+D)"
+                                })
+                                .disabled(!can_bookmark)
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_bookmark(cx))),
+                        ),
+                ),
+            )
+            .child(
+                Button::new("devtools")
+                    .ghost()
+                    .icon(IconName::SquareTerminal)
+                    .tooltip("Developer tools (F12)")
+                    .on_click(cx.listener(|this, _, w, cx| this.open_devtools(&OpenDevTools, w, cx))),
+            )
+    }
+
+    fn render_bookmarks_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let bookmarks = self.bookmarks.borrow();
+        h_flex()
+            .id("bookmarks")
+            .h(px(30.))
+            .px_2()
+            .gap_0p5()
+            .items_center()
+            .overflow_x_hidden()
+            .bg(cx.theme().background)
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .when(bookmarks.is_empty(), |el| {
+                el.child(
+                    div()
+                        .px_2()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Press Ctrl+D or the star to bookmark a page."),
+                )
+            })
+            .children(bookmarks.iter().enumerate().map(|(i, b)| {
+                let url = b.url.clone();
+                Button::new(("bookmark", i))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Globe)
+                    .label(truncate(&b.title, 24))
+                    .tooltip(b.url.clone())
+                    .on_click(cx.listener(move |this, _, window, cx| this.navigate(&url, window, cx)))
+            }))
+    }
+
+    fn render_notice(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let notice = self.notice.as_ref()?;
+        let folder = notice.folder.clone();
+        Some(
+            h_flex()
+                .h(px(32.))
+                .px_3()
+                .gap_2()
+                .items_center()
+                .text_sm()
+                .bg(cx.theme().secondary)
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(Icon::new(Icons::Download).size_4())
+                .child(div().flex_1().min_w_0().truncate().child(notice.text.clone()))
+                .when_some(folder, |el, folder| {
+                    el.child(
+                        Button::new("open-folder")
+                            .ghost()
+                            .xsmall()
+                            .label("Show in folder")
+                            .on_click(move |_, _, _| open_folder(&folder)),
+                    )
+                })
+                .child(
+                    Button::new("dismiss-notice")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.notice = None;
+                            cx.notify();
+                        })),
+                ),
+        )
+    }
+
+    // ----- action handlers ------------------------------------------------
+
+    fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_shortcut(Shortcut::NewTab, window, cx);
+    }
+    fn close_active_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_shortcut(Shortcut::CloseTab, window, cx);
+    }
+    fn reopen_tab(&mut self, _: &ReopenClosedTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_shortcut(Shortcut::ReopenClosedTab, window, cx);
+    }
+    fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_shortcut(Shortcut::NextTab, window, cx);
+    }
+    fn prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_shortcut(Shortcut::PrevTab, window, cx);
+    }
+    fn focus_address_action(&mut self, _: &FocusAddress, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_address(window, cx);
+    }
+    fn bookmark_action(&mut self, _: &ToggleBookmark, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_bookmark(cx);
+    }
+    fn reload(&mut self, _: &Reload, _: &mut Window, cx: &mut Context<Self>) {
+        self.raw(cx, |w| {
+            let _ = w.reload();
+        });
+    }
+    fn go_back(&mut self, _: &GoBack, _: &mut Window, cx: &mut Context<Self>) {
+        self.raw(cx, native::go_back);
+    }
+    fn go_forward(&mut self, _: &GoForward, _: &mut Window, cx: &mut Context<Self>) {
+        self.raw(cx, native::go_forward);
+    }
+    fn go_home(&mut self, _: &GoHome, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate(address::NEW_TAB_URL, window, cx);
+        self.focus_address(window, cx);
+    }
+    fn open_devtools(&mut self, _: &OpenDevTools, _: &mut Window, cx: &mut Context<Self>) {
+        self.raw(cx, |w| w.open_devtools());
+    }
+}
+
+impl Focusable for Browser {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for Browser {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let page = self.active_tab().map(|t| t.webview.clone());
+        let notice = self.render_notice(cx);
+
+        v_flex()
+            .size_full()
+            .track_focus(&self.focus_handle)
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .on_action(cx.listener(Self::new_tab))
+            .on_action(cx.listener(Self::close_active_tab))
+            .on_action(cx.listener(Self::reopen_tab))
+            .on_action(cx.listener(Self::next_tab))
+            .on_action(cx.listener(Self::prev_tab))
+            .on_action(cx.listener(Self::focus_address_action))
+            .on_action(cx.listener(Self::bookmark_action))
+            .on_action(cx.listener(Self::reload))
+            .on_action(cx.listener(Self::go_back))
+            .on_action(cx.listener(Self::go_forward))
+            .on_action(cx.listener(Self::go_home))
+            .on_action(cx.listener(Self::open_devtools))
+            .child(TitleBar::new().child(self.render_tab_strip(cx)))
+            .child(self.render_toolbar(cx))
+            .child(self.render_bookmarks_bar(cx))
+            .children(notice)
+            .child(div().flex_1().min_h_0().w_full().children(page))
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn file_name(path: Option<&PathBuf>) -> String {
+    path.and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into())
+}
+
+fn open_folder(folder: &std::path::Path) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(folder).spawn();
+    #[cfg(not(windows))]
+    let _ = folder;
 }

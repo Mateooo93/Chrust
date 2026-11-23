@@ -1,22 +1,31 @@
 [package]
 name = "aurora"
-version = "0.1.0"
-edition = "2021"
-autobins = false
+version = "0.2.0"
+edition = "2024"
+description = "Aurora: a web browser with a GPUI interface and the WebView2 engine"
 
 [[bin]]
-name = "aurora-dev"
+name = "aurora"
 path = "src/main.rs"
 
 [dependencies]
-winit = "0.30"
-softbuffer = "0.4"
-ureq = { version = "2.12", features = ["gzip"] }
+gpui-kit = "0.10.0"
+gpui-webview = "0.10.0"
+# The wry fork gpui-webview is built on; listed so we can configure the builder.
+wry = { package = "lb-wry", version = "0.53.3", features = ["devtools"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+log = "0.4"
 url = "2.5"
-fontdue = "0.9"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
-boa_engine = "0.20"
-resvg = "0.50.0"
+
+[target.'cfg(windows)'.dependencies]
+# Same version wry uses; needed for the BOOL type in WebView2 history calls wry does not wrap.
+windows-core = "0.61"
+
+[workspace]
+exclude = ["legacy"]
 
 [profile.dev]
 opt-level = 1
