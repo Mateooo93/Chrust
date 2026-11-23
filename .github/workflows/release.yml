@@ -50,6 +50,27 @@ jobs:
           $stream.Write($bytes, 0, $bytes.Length)
           $stream.Close()
 
+      - name: Check the setup exe unpacks
+        shell: pwsh
+        run: |
+          # The extraction the installer performs, exercised here so a broken
+          # payload never reaches a release.
+          $dir = Join-Path $env:RUNNER_TEMP 'payload-test'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item aurora-setup.exe $dir/app.exe
+          Copy-Item target/release/aurora.exe -Destination $dir/expected.exe
+          $src = Get-Content tools/installer/aurora-installer.ps1 -Raw
+          $code = [regex]::Match($src, '(?s)function Get-SelfPath.*?(?=function Install-Aurora)').Value
+          $code = $code.Replace('return $process.MainModule.FileName', 'return $global:SetupPath')
+          $global:SetupPath = (Join-Path $dir 'app.exe')
+          Invoke-Expression $code
+          $out = Join-Path $dir 'out'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $files = Expand-Payload $out
+          if ((Get-FileHash $files.Exe).Hash -ne (Get-FileHash (Join-Path $dir 'expected.exe')).Hash) {
+            throw 'The setup exe does not contain the built browser.'
+          }
+
       - name: Publish the release
         shell: pwsh
         env:

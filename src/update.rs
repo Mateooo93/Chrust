@@ -181,6 +181,8 @@ fn install(version: &str, address: &str) -> Result<(), String> {
         lib.flush();
     }
 
+    // The setup exe unpacks beside itself when run, so later updates look
+    // for the new version next to this executable.
     let exe = std::env::current_exe().map_err(|e| format!("could not find Aurora's own file: {e}"))?;
     let install_dir = exe.parent().map(Path::to_path_buf).unwrap_or_else(|| dir.clone());
     let script = install_dir.join(SCRIPT_NAME);
