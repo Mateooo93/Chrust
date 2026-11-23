@@ -10,7 +10,7 @@ use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebViewBuilder, http};
 
 use crate::library::Shared;
 use crate::native::{self, NativeEvent};
-use crate::{address, browser, extensions, pages, proxy::ProxyBuilder as _, storage};
+use crate::{address, browser, extensions, pages, storage};
 
 pub type TabId = u64;
 
@@ -288,9 +288,6 @@ impl Tab {
         let builder = WebViewBuilder::new_with_web_context(context)
             .with_url(url)
             .with_incognito(private)
-            // A proxy set for Chrust covers pages too, not just its own
-            // downloads.
-            .with_proxy_config_opt(crate::proxy::configured().map(|p| p.for_webview()))
             .with_background_color(background)
             .with_devtools(true)
             .with_hotkeys_zoom(true)
@@ -372,16 +369,29 @@ impl Tab {
         let builder = {
             use wry::WebViewBuilderExtWindows as _;
             let folder = extensions::extensions_dir();
-            let mut builder = builder
-                .with_browser_extensions_enabled(true)
-                .with_additional_browser_args(
-                    "--enable-features=msExtensions,msEdgeExtensions --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
-                );
+            // The proxy goes in as Chromium's own switch, which is read when
+            // the engine's process starts.
+            let mut args = String::from(
+                "--enable-features=msExtensions,msEdgeExtensions --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+            );
+            if let Some(proxy) = crate::proxy::configured() {
+                args.push(' ');
+                args.push_str(&proxy.browser_flag());
+            }
+            let mut builder = builder.with_browser_extensions_enabled(true).with_additional_browser_args(args);
             if std::fs::create_dir_all(&folder).is_ok() {
                 builder = builder.with_extensions_path(folder);
             }
             builder
         };
+        // Elsewhere the engine takes the proxy directly.
+        #[cfg(not(windows))]
+        let builder = match crate::proxy::configured() {
+            Some(proxy) => builder.with_proxy_config(proxy.for_webview()),
+            None => builder,
+        };
+        #[cfg(windows)]
+        let builder = builder;
 
         let webview = WebView::build(builder, window, cx)?;
         native::set_save_passwords(webview.raw(), save_passwords);

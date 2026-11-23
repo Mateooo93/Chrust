@@ -56,12 +56,28 @@ pub fn configured() -> Option<&'static Proxy> {
 }
 
 impl Proxy {
-    /// For wry's page engine.
+    /// For wry's page engine, on platforms that take it there. The address
+    /// is split the way wry expects it back.
+    #[allow(dead_code)]
     pub fn for_webview(&self) -> wry::ProxyConfig {
         let endpoint = |host: &str, port: &str| wry::ProxyEndpoint { host: host.to_string(), port: port.to_string() };
         match self {
             Proxy::Socks5(host, port) => wry::ProxyConfig::Socks5(endpoint(host, port)),
             Proxy::Http(host, port) => wry::ProxyConfig::Http(endpoint(host, port)),
+        }
+    }
+
+    /// Chromium's own switch, given to the page engine as a start-up
+    /// argument. Local addresses still go through the proxy, which is what
+    /// makes the loopback proxy on this machine usable at all.
+    pub fn browser_flag(&self) -> String {
+        match self {
+            Proxy::Socks5(host, port) => {
+                format!("--proxy-server=socks5://{host}:{port} --proxy-bypass-list=<-loopback>")
+            }
+            Proxy::Http(host, port) => {
+                format!("--proxy-server=http://{host}:{port} --proxy-bypass-list=<-loopback>")
+            }
         }
     }
 
@@ -97,20 +113,6 @@ pub fn agent() -> ureq::Agent {
         None => builder,
     }
     .build()
-}
-
-/// Shorthand for the builder: an optional proxy.
-pub trait ProxyBuilder: Sized {
-    fn with_proxy_config_opt(self, proxy: Option<wry::ProxyConfig>) -> Self;
-}
-
-impl ProxyBuilder for wry::WebViewBuilder<'_> {
-    fn with_proxy_config_opt(self, proxy: Option<wry::ProxyConfig>) -> Self {
-        match proxy {
-            Some(proxy) => self.with_proxy_config(proxy),
-            None => self,
-        }
-    }
 }
 
 #[cfg(test)]
