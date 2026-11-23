@@ -4,7 +4,7 @@ use url::Url;
 
 /// Built-in pages. WebView2 serves the custom `aurora` protocol at
 /// `http://aurora.<page>/`; the address bar shows them as `aurora://<page>`.
-pub const INTERNAL_PAGES: &[&str] = &["newtab", "settings"];
+pub const INTERNAL_PAGES: &[&str] = &["newtab", "settings", "install"];
 
 pub const NEW_TAB_URL: &str = "http://aurora.newtab/";
 pub const SETTINGS_URL: &str = "http://aurora.settings/";

@@ -35,6 +35,11 @@ pub fn id_from_input(input: &str) -> Option<String> {
     url.path_segments()?.find_map(|part| extension_id(part)).map(str::to_string)
 }
 
+/// The extension's page on the Chrome Web Store.
+pub fn store_page(id: &str) -> String {
+    format!("https://chromewebstore.google.com/detail/{id}")
+}
+
 /// Where unpacked extensions live; each extension gets a folder named by id.
 pub fn extensions_dir() -> PathBuf {
     storage::data_dir().join("Extensions")

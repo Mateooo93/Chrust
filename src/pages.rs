@@ -360,6 +360,78 @@ addEventListener("blur", hideMenu);
     )
 }
 
+/// The page Chrome Web Store install buttons land on: it asks Aurora to
+/// fetch the extension, then shows the outcome and where to see it.
+pub fn install(lib: &Library, id: &str) -> String {
+    let (message, ok) = match crate::extensions::install(id) {
+        Ok(name) => (format!("{name} is installed. It runs on pages opened from now on."), true),
+        Err(err) => (format!("This extension could not be installed: {err}"), false),
+    };
+    let data = json!({
+        "result": message,
+        "ok": ok,
+        "id": id,
+        "page": crate::extensions::store_page(id),
+        "store": "https://chromewebstore.google.com/",
+        "settings": crate::address::SETTINGS_URL,
+    });
+    format!(
+        r##"<!doctype html>
+<html lang="en" style="{vars}">
+<head>
+<meta charset="utf-8">
+<title>Aurora extension install</title>
+<style>{BASE_CSS}
+body{{display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}}
+main{{position:relative;z-index:1;max-width:480px;width:100%;text-align:center}}
+.mark{{width:56px;height:56px;border-radius:16px;margin:0 auto 18px;display:flex;align-items:center;justify-content:center;font-size:26px;background:var(--elevated);border:1px solid var(--border)}}
+.mark.ok{{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}}
+h1{{font-size:24px;margin:0 0 8px;letter-spacing:-.4px}}
+p{{color:var(--muted);margin:0 0 22px;line-height:1.5}}
+.actions{{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}}
+.btn{{padding:10px 16px;border-radius:10px;border:1px solid var(--border);background:var(--elevated);color:var(--fg);text-decoration:none;font-size:14px}}
+.btn.primary{{background:var(--accent);border-color:transparent;color:var(--on-accent)}}
+</style>
+</head>
+<body>
+<main>
+  <div class="mark" id="mark"></div>
+  <h1 id="title"></h1>
+  <p id="detail"></p>
+  <div class="actions">
+    <a class="btn primary" id="store">Extension page</a>
+    <a class="btn" id="more">More extensions</a>
+    <a class="btn" id="settings">Aurora settings</a>
+  </div>
+</main>
+<script>
+const D = {data};
+const mark = document.getElementById("mark");
+mark.textContent = D.ok ? "✓" : "!";
+if (D.ok) mark.classList.add("ok");
+document.getElementById("title").textContent = D.ok ? "Installed in Aurora" : "Not installed";
+document.getElementById("detail").textContent = D.result;
+document.getElementById("store").href = D.page;
+document.getElementById("more").href = D.store;
+document.getElementById("settings").href = D.settings;
+</script>
+</body>
+</html>"##,
+        vars = crate::themes::css_vars(lib.palette),
+        data = script_json(&data),
+    )
+}
+
+/// For install requests that carry no extension id.
+pub fn install_nothing() -> String {
+    r#"<!doctype html><meta charset="utf-8"><title>Aurora</title>
+<body style="font-family:Segoe UI,system-ui,sans-serif;padding:40px">
+<h1>Nothing to install</h1>
+<p>This page belongs to an extension install button.
+<a href="https://chromewebstore.google.com/">Browse the store</a> instead.</p>"#
+        .to_string()
+}
+
 pub fn settings(lib: &Library) -> String {
     let engines: Vec<_> = SEARCH_ENGINES.iter().map(|e| json!({ "id": e.id, "name": e.name })).collect();
     let backgrounds: Vec<_> = BACKGROUNDS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect();

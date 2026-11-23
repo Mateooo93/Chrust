@@ -166,6 +166,24 @@ pub struct Tab {
     pub zoom: f64,
 }
 
+/// Chrome Web Store pages send their install button at the browser itself,
+/// which is what makes "Add to Chrome" fail in a shell that is not Chrome.
+/// Aurora's answer is a page that asks it to fetch and install the extension
+/// and then shows whether that worked.
+fn install_redirect(context: &PageContext, target: Option<&str>) -> http::Response<Cow<'static, [u8]>> {
+    let id = target.and_then(crate::extensions::extension_id);
+    let (status, body) = match id {
+        Some(id) => (200, pages::install(&context.lib.borrow(), id)),
+        None => (400, pages::install_nothing()),
+    };
+    http::Response::builder()
+        .status(status)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header("Cache-Control", "no-store")
+        .body(Cow::Owned(body.into_bytes()))
+        .expect("static response parts are valid")
+}
+
 /// Built-in page name from a custom-protocol request URI, which arrives as
 /// `http://aurora.settings/...` or `aurora://settings/...`.
 fn page_of(uri: &http::Uri) -> String {
@@ -178,6 +196,12 @@ fn serve(context: &PageContext, request: &http::Request<Vec<u8>>) -> http::Respo
     let private = context.private;
     let page = page_of(request.uri());
     let path = request.uri().path();
+    // The store page's install button posts here; the form's target names
+    // the extension ("chromewebstore" is the store itself, not one).
+    if page == "install" && path == "/add" {
+        let target = request.uri().query().and_then(|q| q.split('&').find_map(|p| p.strip_prefix("target=")));
+        return install_redirect(context, target);
+    }
     let (status, mime, body): (u16, &str, Vec<u8>) = match (page.as_str(), path) {
         // The name carries a fingerprint, so pages can cache the image.
         (_, logo_path) if logo_path == browser::LOGO_PATH => {
