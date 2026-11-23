@@ -3,6 +3,7 @@
 
 mod address;
 mod browser;
+mod import;
 mod native;
 mod pages;
 mod storage;

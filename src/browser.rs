@@ -19,6 +19,7 @@ use gpui_kit::*;
 use wry::WebContext;
 
 use crate::address;
+use crate::import;
 use crate::native;
 use crate::storage::{self, Bookmark, Session};
 use crate::tab::{PageEvent, Shortcut, Tab, TabId};
@@ -68,6 +69,7 @@ pub fn bind_keys(cx: &mut App) {
 /// A one-line notice under the toolbar. GPUI popups would be hidden behind
 /// the native page on Windows, so notices live in the browser chrome.
 struct Notice {
+    icon: Icons,
     text: String,
     folder: Option<PathBuf>,
 }
@@ -166,6 +168,7 @@ impl Browser {
             Err(err) => {
                 log::error!("could not create a WebView2 page: {err:#}");
                 self.notice = Some(Notice {
+                    icon: Icons::TriangleAlert,
                     text: format!(
                         "Could not start the page engine (WebView2): {err}. \
                          Install the WebView2 Runtime from Microsoft and restart Aurora."
@@ -304,6 +307,29 @@ impl Browser {
         self.bookmarks.borrow().iter().any(|b| b.url == url)
     }
 
+    fn import_from_chrome(&mut self, cx: &mut Context<Self>) {
+        let result = import::import_chrome(&self.bookmarks.borrow());
+        let text = match result {
+            Ok(result) => {
+                let added = result.added.len();
+                if added > 0 {
+                    let mut bookmarks = self.bookmarks.borrow_mut();
+                    bookmarks.extend(result.added);
+                    storage::save_bookmarks(&bookmarks);
+                }
+                let from = result.profiles.join(", ");
+                match (added, result.found) {
+                    (_, 0) => format!("No bookmarks found in Chrome ({from})."),
+                    (0, found) => format!("All {found} Chrome bookmarks are already in Aurora."),
+                    (added, _) => format!("Imported {added} bookmarks from Chrome ({from})."),
+                }
+            }
+            Err(err) => err,
+        };
+        self.notice = Some(Notice { icon: Icons::Import, text, folder: None });
+        cx.notify();
+    }
+
     fn save_session(&self) {
         let tabs = self.tabs.iter().map(|t| t.url.clone()).collect();
         storage::save_session(&Session { tabs, active: self.active });
@@ -379,19 +405,20 @@ impl Browser {
             }
             PageEvent::DownloadStarted(path) => {
                 let name = file_name(Some(&path));
-                self.notice = Some(Notice { text: format!("Downloading {name}…"), folder: None });
+                self.notice = Some(Notice { icon: Icons::Download, text: format!("Downloading {name}…"), folder: None });
             }
             PageEvent::DownloadFinished { path, success } => {
                 let name = file_name(path.as_ref());
                 self.notice = Some(if success {
                     Notice {
+                        icon: Icons::Download,
                         text: format!("Downloaded {name}"),
                         folder: path
                             .and_then(|p| p.parent().map(PathBuf::from))
                             .or_else(|| Some(storage::downloads_dir())),
                     }
                 } else {
-                    Notice { text: format!("Download failed: {name}"), folder: None }
+                    Notice { icon: Icons::TriangleAlert, text: format!("Download failed: {name}"), folder: None }
                 });
             }
         }
@@ -457,6 +484,9 @@ impl Browser {
                 h_flex()
                     .id(("tab", tab.id))
                     .group("tab")
+                    // Take the mouse from the title bar's drag area underneath,
+                    // which on Windows would turn every click into a window move.
+                    .occlude()
                     .h(px(30.))
                     .min_w(px(60.))
                     .max_w(px(220.))
@@ -501,7 +531,7 @@ impl Browser {
                     )
             }))
             .child(
-                div().pb_1().child(
+                div().id("new-tab-slot").occlude().pb_1().child(
                     Button::new("new-tab")
                         .ghost()
                         .small()
@@ -600,6 +630,13 @@ impl Browser {
                 ),
             )
             .child(
+                Button::new("import-chrome")
+                    .ghost()
+                    .icon(Icons::Import)
+                    .tooltip("Import bookmarks from Chrome")
+                    .on_click(cx.listener(|this, _, _, cx| this.import_from_chrome(cx))),
+            )
+            .child(
                 Button::new("devtools")
                     .ghost()
                     .icon(IconName::SquareTerminal)
@@ -654,7 +691,7 @@ impl Browser {
                 .bg(cx.theme().secondary)
                 .border_b_1()
                 .border_color(cx.theme().border)
-                .child(Icon::new(Icons::Download).size_4())
+                .child(Icon::new(notice.icon).size_4())
                 .child(div().flex_1().min_w_0().truncate().child(notice.text.clone()))
                 .when_some(folder, |el, folder| {
                     el.child(
