@@ -609,7 +609,7 @@ document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = () => {{
 
 $("ver").textContent = D.version; $("ever").textContent = D.engineVersion; $("datadir").textContent = D.dataDir;
 $("ghrepo").textContent = "github.com/" + D.releaseRepo;
-$("update").onclick = () => window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "check_for_updates" }}));
+$("update").onclick = () => {{ __auroraToast("Checking GitHub for updates…"); window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "check_for_updates" }})); }};
 if (D.update) __auroraToast(D.update);
 $("histcount").textContent = D.counts.history + " pages visited.";
 
