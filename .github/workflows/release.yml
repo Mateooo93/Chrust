@@ -77,4 +77,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
-          gh release create "${{ github.ref_name }}" aurora.exe aurora-setup.exe --title "Aurora $version" --generate-notes
+          # A re-run for an existing tag replaces the files instead of failing.
+          gh release view "${{ github.ref_name }}" > $null 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "${{ github.ref_name }}" aurora.exe aurora-setup.exe --clobber
+          } else {
+            gh release create "${{ github.ref_name }}" aurora.exe aurora-setup.exe --title "Aurora $version" --generate-notes
+          }
