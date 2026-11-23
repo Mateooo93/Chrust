@@ -475,11 +475,26 @@ impl Browser {
             Ok(tab) => tab,
             Err(err) => {
                 log::error!("could not create a WebView2 page: {err:#}");
+                // The engine is busy for a moment while another tab closes
+                // or a window changes, and says so; trying again shortly is
+                // what other engine embedders do.
+                if crate::crashlog::worth_retrying(&err) {
+                    log::info!("new tab: engine busy, retrying");
+                    cx.spawn_in(window, async move |this, cx| {
+                        cx.background_executor().timer(Duration::from_millis(350)).await;
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            let url = address::NEW_TAB_URL.to_string();
+                            this.open_tab(&url, true, window, cx);
+                        });
+                    })
+                    .detach();
+                    return;
+                }
                 self.show_notice(
                     Icons::TriangleAlert,
                     format!(
-                        "Could not start the page engine (WebView2): {err}. \
-                         Install the WebView2 Runtime from Microsoft and restart Chrust."
+                        "Could not open a new tab: {}. Details are in chrust.log in your data folder.",
+                        crate::crashlog::describe(&err)
                     ),
                     cx,
                 );
@@ -1200,13 +1215,17 @@ impl Browser {
     fn site_icon(&self, url: &str, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         match address::internal_page(url) {
-            Some("settings") => return Icon::new(Icons::Settings).size_4().text_color(muted).into_any_element(),
-            Some(_) => return logo().size_4().flex_none().rounded_sm().into_any_element(),
+            // Tab and bookmark icons match a classic Chrome favicon (16 px
+            // at 100%, 20 px here to read well next to the tab text).
+            Some("settings") => {
+                return Icon::new(Icons::Settings).size(px(20.)).text_color(muted).into_any_element();
+            }
+            Some(_) => return logo().size(px(20.)).flex_none().rounded_sm().into_any_element(),
             None => {}
         }
         match favicons::icon(url, cx) {
-            Some(path) => img(path).size_4().flex_none().rounded_sm().into_any_element(),
-            None => Icon::new(Icons::Globe).size_4().text_color(muted).into_any_element(),
+            Some(path) => img(path).size(px(20.)).flex_none().rounded_sm().into_any_element(),
+            None => Icon::new(Icons::Globe).size(px(20.)).text_color(muted).into_any_element(),
         }
     }
 

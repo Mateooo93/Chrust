@@ -28,6 +28,8 @@ base64 = "0.22"
 # Same versions wry uses, for WebView2 features wry does not wrap.
 webview2-com = "0.38"
 windows-core = "0.61"
+# Error codes from the engine, to recognise the one that means "retry".
+windows = "0.61"
 
 [build-dependencies]
 embed-resource = "3"
@@ -43,7 +45,7 @@ opt-level = 2
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-# Nothing in the browser needs to unwind out of a panic (no FFI callback
-# relies on it), so let the optimizer drop landing pads.
-panic = "abort"
+# Unwinding stays on so the log in the data folder names where a crash
+# happened instead of the window vanishing.
 strip = "debuginfo"
+debug = 1

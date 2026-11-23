@@ -3,6 +3,7 @@
 
 mod address;
 mod browser;
+mod crashlog;
 mod extensions;
 mod favicons;
 mod import;
@@ -24,7 +25,16 @@ fn main() {
         std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "true");
     }
 
-    // `aurora <url> [url...]` opens those pages instead of restoring the last session.
+    let log_file = crashlog::start();
+    std::panic::set_hook(Box::new(move |info| {
+        let where_ = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        log::error!("panic at {where_}: {info}");
+        // Nothing here needs to keep running after a panic, and the log has
+        // the details.
+        std::process::exit(101);
+    }));
+
+    // `chrust <url> [url...]` opens those pages instead of restoring the last session.
     let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
 
     #[cfg(target_os = "linux")]
@@ -37,6 +47,7 @@ fn main() {
         browser::bind_keys(cx);
         let lib = library::init(cx);
         library::apply_theme(cx);
+        log::info!("Chrust {} started, log: {:?}", env!("CARGO_PKG_VERSION"), log_file);
 
         let (restore, search) = {
             let lib = lib.borrow();
