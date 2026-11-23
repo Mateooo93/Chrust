@@ -1,5 +1,9 @@
 //! Checking GitHub for a newer Aurora and installing it.
 //!
+//! Replacing the running executable is Windows-only; on other platforms the
+//! menu entry is hidden and the settings page says to get the new version
+//! from the repository.
+//!
 //! "Check for updates" asks GitHub for the newest release that ships an
 //! executable. When its version is newer than this build, the file downloads
 //! into `%LOCALAPPDATA%\Aurora\Updates` (and shows up in the downloads panel
@@ -35,6 +39,9 @@ fn agent() -> &'static ureq::Agent {
 fn updates_dir() -> PathBuf {
     crate::storage::data_dir().join("Updates")
 }
+
+/// Whether this platform can install an update in place.
+pub const CAN_INSTALL: bool = cfg!(windows);
 
 /// Asks GitHub for the newest release. Waiting on the network happens on its
 /// own thread; the outcome reaches the UI through `cx.spawn`.
@@ -145,6 +152,12 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 /// way, in its own folder. The `aurora-setup.exe` installer is never picked
 /// automatically: replacing an installer would leave the old install behind.
 fn install(version: &str, address: &str) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (version, address);
+        return Err(format!("download it from github.com/{REPO} and replace Aurora by hand"));
+    }
+    #[cfg(windows)]
     let dir = updates_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let downloaded = dir.join(format!("aurora-{version}.exe"));
@@ -215,18 +228,14 @@ fn restart_script(script: &Path, downloaded: &Path, exe: &Path) -> std::io::Resu
     fs::write(script, text)
 }
 
+#[cfg(windows)]
 fn spawn_script(script: &Path) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        let _ = std::process::Command::new("cmd.exe")
-            .arg("/c")
-            .arg(script)
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .spawn();
-    }
-    #[cfg(not(windows))]
-    let _ = script;
+    use std::os::windows::process::CommandExt as _;
+    let _ = std::process::Command::new("cmd.exe")
+        .arg("/c")
+        .arg(script)
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .spawn();
 }
 
 #[cfg(test)]

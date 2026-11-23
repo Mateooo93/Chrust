@@ -375,6 +375,7 @@ pub fn settings(lib: &mut Library) -> String {
         "engineVersion": wry::webview_version().unwrap_or_else(|_| "unknown".into()),
         "dataDir": crate::storage::data_dir().display().to_string(),
         "releaseRepo": crate::update::REPO,
+        "canInstall": crate::update::CAN_INSTALL,
         "update": update,
     });
 
@@ -493,7 +494,7 @@ code{{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px;color:var(
       <div class="row"><div class="t"><b>Aurora <span id="ver"></span></b><small>Interface built with GPUI · pages rendered by Microsoft Edge WebView2 <span id="ever"></span></small></div>
         <button class="btn" data-cmd="open_devtools">Open DevTools</button>
         <button class="btn" id="update">Check for updates</button></div>
-      <div class="row"><div class="t"><b>Updates</b><small>From <span id="ghrepo"></span>. Aurora replaces only its own files, keeps your data, and restarts when done.</small></div>
+      <div class="row"><div class="t"><b>Updates</b><small><span id="updnote">From <span id="ghrepo"></span>. Aurora replaces only its own files, keeps your data, and restarts when done.</span></small></div>
         <button class="btn" data-cmd="open_downloads">Show downloads</button></div>
     </div>
   </section>
@@ -609,6 +610,12 @@ document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = () => {{
 
 $("ver").textContent = D.version; $("ever").textContent = D.engineVersion; $("datadir").textContent = D.dataDir;
 $("ghrepo").textContent = "github.com/" + D.releaseRepo;
+if (!D.canInstall) {{
+  // Other platforms get the release by hand; the button only checks.
+  $("update").textContent = "Open releases";
+  $("update").onclick = () => window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "open_releases" }}));
+  $("updnote").textContent = "Get the newest version from the releases page.";
+}}
 $("update").onclick = () => {{ __auroraToast("Checking GitHub for updates…"); window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "check_for_updates" }})); }};
 if (D.update) __auroraToast(D.update);
 $("histcount").textContent = D.counts.history + " pages visited.";

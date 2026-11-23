@@ -1091,6 +1091,10 @@ impl Browser {
             }
             "open_devtools" => self.run(Cmd::DevTools, window, cx),
             "open_downloads" => self.run(Cmd::Panel(Panel::Downloads), window, cx),
+            "open_releases" => {
+                let url = format!("https://github.com/{}/releases/latest", crate::update::REPO);
+                self.open_tab(&url, true, window, cx);
+            }
             "check_for_updates" => {
                 self.run(Cmd::CheckForUpdates, window, cx);
                 self.notify_page(tab, "Checking GitHub for updates…", cx);
@@ -1763,7 +1767,9 @@ impl Browser {
             .child(self.menu_row("m-copy", Icons::Copy, "Copy page link", "", Cmd::CopyUrl, cx))
             .child(sep())
             .child(self.menu_row("m-settings", Icons::Settings, "Settings", "Ctrl+,", Cmd::Settings, cx))
-            .child(self.menu_row("m-update", Icons::Download, "Check for updates", "", Cmd::CheckForUpdates, cx))
+            .when(crate::update::CAN_INSTALL, |menu| {
+                menu.child(self.menu_row("m-update", Icons::Download, "Check for updates", "", Cmd::CheckForUpdates, cx))
+            })
     }
 
     fn list_row(&self, id: ElementId, icon: AnyElement, title: String, detail: String, cx: &App) -> Stateful<Div> {
@@ -2184,7 +2190,7 @@ fn open_path(path: &Path) {
     #[cfg(windows)]
     let _ = std::process::Command::new("explorer").arg(path).spawn();
     #[cfg(not(windows))]
-    let _ = path;
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
 #[cfg(test)]

@@ -1,4 +1,6 @@
-//! Files Aurora keeps between runs, under `%LOCALAPPDATA%\Aurora`.
+//! Files Aurora keeps between runs: under `%LOCALAPPDATA%\Aurora` on
+//! Windows, under `$XDG_DATA_HOME/aurora` (usually `~/.local/share/aurora`)
+//! elsewhere.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,11 +11,23 @@ use serde::{Deserialize, Serialize};
 use crate::settings::Settings;
 
 pub fn data_dir() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("Aurora")
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+            .unwrap_or_else(std::env::temp_dir);
+        return base.join("Aurora");
+    }
+    #[cfg(not(windows))]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
+            .unwrap_or_else(std::env::temp_dir);
+        base.join("aurora")
+    }
 }
 
 /// Where WebView2 keeps cookies, logins, cache and site data.
@@ -31,8 +45,12 @@ pub fn background_file() -> PathBuf {
 }
 
 pub fn downloads_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE")
-        .map(|home| PathBuf::from(home).join("Downloads"))
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    home.map(|home| PathBuf::from(home).join("Downloads"))
+        .filter(|dir| dir.is_dir())
         .unwrap_or_else(|| data_dir().join("Downloads"))
 }
 

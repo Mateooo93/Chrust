@@ -22,9 +22,25 @@ pub struct ImportResult {
 }
 
 fn chrome_user_data() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    let dir = PathBuf::from(base).join("Google").join("Chrome").join("User Data");
-    dir.is_dir().then_some(dir)
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("LOCALAPPDATA")?;
+        let dir = PathBuf::from(base).join("Google").join("Chrome").join("User Data");
+        return dir.is_dir().then_some(dir);
+    }
+    // Chrome on Linux: $XDG_CONFIG_HOME/google-chrome (Chromium:
+    // ~/.config/chromium). Both are read when present.
+    #[cfg(not(windows))]
+    {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        ["google-chrome", "chromium"]
+            .into_iter()
+            .map(|name| base.join(name))
+            .find(|dir| dir.is_dir())
+    }
 }
 
 /// (folder name, display name) of every Chrome profile.

@@ -138,24 +138,39 @@ mod imp {
         None
     }
 
-    pub fn can_go_back(_: &wry::WebView) -> bool {
+    pub fn can_go_back(webview: &wry::WebView) -> bool {
         true
     }
-    pub fn can_go_forward(_: &wry::WebView) -> bool {
+    pub fn can_go_forward(webview: &wry::WebView) -> bool {
         true
     }
+    /// Back and forward, then the page reports its new address: on these
+    /// engines wry reports load progress for the document only, and a move
+    /// between history entries may not load one.
     pub fn go_back(webview: &wry::WebView) {
         let _ = webview.evaluate_script("history.back()");
+        report_url(webview);
     }
     pub fn go_forward(webview: &wry::WebView) {
         let _ = webview.evaluate_script("history.forward()");
+        report_url(webview);
     }
+
+    #[cfg(target_os = "linux")]
+    fn report_url(webview: &wry::WebView) {
+        let _ = webview.evaluate_script(
+            "setTimeout(() => { try { window.ipc.postMessage(JSON.stringify({ kind: 'url' })) } catch (_) {} }, 250)",
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn report_url(_: &wry::WebView) {}
     pub fn stop(webview: &wry::WebView) {
         let _ = webview.evaluate_script("window.stop()");
     }
     pub fn set_muted(_: &wry::WebView, _: bool) {}
     pub fn set_save_passwords(_: &wry::WebView, _: bool) {}
     pub fn watch(_: &wry::WebView, _: impl Fn(NativeEvent) + Clone + 'static) {}
+
 }
 
 pub use imp::*;
