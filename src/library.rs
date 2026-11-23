@@ -55,8 +55,8 @@ pub type Shared = Rc<RefCell<Library>>;
 struct LibraryGlobal(Shared);
 impl Global for LibraryGlobal {}
 
-/// Also reachable without an `App`, for background work (favicon downloads,
-/// which report back on the UI thread).
+// Also reachable without an `App`, for background work (favicon downloads
+// and updates, which report back on the UI thread).
 thread_local! {
     static GLOBAL: std::cell::OnceCell<Shared> = const { std::cell::OnceCell::new() };
 }

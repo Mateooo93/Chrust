@@ -45,13 +45,15 @@ pub fn check_and_install(lib: Shared, cx: &mut App) {
     });
     cx.spawn(async move |cx| {
         let result = rx.await.ok();
-        let _ = cx.update(|_| {
+        let _ = cx.update(|app| {
             let text = result.unwrap_or_else(|| "The update check did not finish.".into());
-            let mut lib = lib.borrow_mut();
-            lib.update_message = Some(text);
-            lib.flush();
+            {
+                let mut lib = lib.borrow_mut();
+                lib.update_message = Some(text);
+                lib.flush();
+            }
+            app.refresh_windows();
         });
-        cx.refresh_windows();
     })
     .detach();
 }
@@ -69,8 +71,11 @@ fn check() -> String {
         Ok(response) => response,
         Err(err) => return status_text(err),
     };
-    let body: serde_json::Value = match response.into_json() {
-        Ok(body) => body,
+    let body: serde_json::Value = match response.into_string() {
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(body) => body,
+            Err(err) => return format!("Could not read GitHub's answer: {err}"),
+        },
         Err(err) => return format!("Could not read GitHub's answer: {err}"),
     };
     let is_release = body["draft"].as_bool() != Some(true);

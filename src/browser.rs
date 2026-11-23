@@ -133,6 +133,7 @@ enum Cmd {
     Settings,
     ToggleBookmarksBar,
     ViewSource,
+    CheckForUpdates,
     Fullscreen,
     Reload,
     Stop,
