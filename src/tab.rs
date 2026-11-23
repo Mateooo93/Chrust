@@ -1,19 +1,30 @@
 //! One browser tab: a WebView2 instance plus the state the UI shows for it.
 
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use futures::channel::mpsc::UnboundedSender;
 use gpui_kit::{App, AppContext as _, Entity, Window};
 use gpui_webview::WebView;
 use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebViewBuilder, http};
 
-use crate::pages;
-use crate::storage::Bookmark;
+use crate::library::Shared;
+use crate::native::{self, NativeEvent};
+use crate::{address, browser, pages, storage};
 
 pub type TabId = u64;
+
+/// What a built-in page is rendered with: the shared browser state and
+/// whether the tab is private. Pages ask for it on every request, so they
+/// show current data without being reloaded by hand.
+pub struct PageContext {
+    pub lib: Shared,
+    pub private: bool,
+}
+
+pub fn page_context(lib: &Shared, private: bool) -> PageContext {
+    PageContext { lib: lib.clone(), private }
+}
 
 /// Something that happened inside a page. WebView2 reports these from its own
 /// callbacks; they reach the UI through a channel so no UI state is borrowed
@@ -23,12 +34,21 @@ pub enum PageEvent {
     TitleChanged(String),
     LoadStarted(String),
     LoadFinished(String),
+    /// Navigation result from engines that report it (WebView2): the tab,
+    /// the address that was being opened, and whether it rendered. Unlike
+    /// `UrlMaybeChanged` this cannot be produced by page scripts.
+    Navigation(TabId, String, crate::native::NavigationStatus),
     /// The page changed its URL without a load (history.pushState, #hash).
     UrlMaybeChanged,
     OpenInNewTab(String),
     Shortcut(Shortcut),
     DownloadStarted(PathBuf),
     DownloadFinished { path: Option<PathBuf>, success: bool },
+    Fullscreen(bool),
+    Audio(bool),
+    FindResult(usize),
+    /// A command from a built-in page (settings, new tab).
+    Internal(serde_json::Value),
 }
 
 /// Browser shortcuts pressed while the page has keyboard focus. GPUI never
@@ -36,6 +56,8 @@ pub enum PageEvent {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Shortcut {
     NewTab,
+    NewWindow,
+    NewPrivateWindow,
     CloseTab,
     ReopenClosedTab,
     NextTab,
@@ -43,18 +65,36 @@ pub enum Shortcut {
     SelectTab(usize),
     FocusAddress,
     ToggleBookmark,
+    Find,
+    History,
+    Downloads,
+    Bookmarks,
+    Settings,
+    ToggleBookmarksBar,
+    ViewSource,
+    Fullscreen,
 }
 
 impl Shortcut {
     fn parse(action: &str) -> Option<Self> {
         Some(match action {
             "new_tab" => Self::NewTab,
+            "new_window" => Self::NewWindow,
+            "new_private_window" => Self::NewPrivateWindow,
             "close_tab" => Self::CloseTab,
             "reopen_tab" => Self::ReopenClosedTab,
             "next_tab" => Self::NextTab,
             "prev_tab" => Self::PrevTab,
             "focus_address" => Self::FocusAddress,
             "bookmark" => Self::ToggleBookmark,
+            "find" => Self::Find,
+            "history" => Self::History,
+            "downloads" => Self::Downloads,
+            "bookmarks" => Self::Bookmarks,
+            "settings" => Self::Settings,
+            "bookmarks_bar" => Self::ToggleBookmarksBar,
+            "view_source" => Self::ViewSource,
+            "fullscreen" => Self::Fullscreen,
             _ => {
                 let n: usize = action.strip_prefix("tab_")?.parse().ok()?;
                 if !(1..=9).contains(&n) {
@@ -83,19 +123,29 @@ const PAGE_SCRIPT: &str = r#"
   addEventListener("hashchange", urlChanged);
   addEventListener("keydown", (e) => {
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    let action = null;
-    if (e.ctrlKey && !e.altKey && !e.metaKey) {
-      if (k === "t") action = e.shiftKey ? "reopen_tab" : "new_tab";
-      else if (k === "w" || k === "F4") action = "close_tab";
-      else if (k === "l") action = "focus_address";
-      else if (k === "d") action = "bookmark";
-      else if (k === "Tab") action = e.shiftKey ? "prev_tab" : "next_tab";
-      else if (k === "PageDown") action = "next_tab";
-      else if (k === "PageUp") action = "prev_tab";
-      else if (/^[1-9]$/.test(k) && !e.shiftKey) action = "tab_" + k;
-    } else if (e.altKey && !e.ctrlKey && k === "d") action = "focus_address";
-    else if (k === "F6") action = "focus_address";
-    if (action) { e.preventDefault(); e.stopImmediatePropagation(); send({ kind: "shortcut", action }); }
+    const c = e.ctrlKey && !e.altKey && !e.metaKey, s = e.shiftKey;
+    let a = null;
+    if (c) {
+      if (k === "t") a = s ? "reopen_tab" : "new_tab";
+      else if (k === "n") a = s ? "new_private_window" : "new_window";
+      else if (k === "w" || k === "F4") a = "close_tab";
+      else if (k === "l") a = "focus_address";
+      else if (k === "d" && !s) a = "bookmark";
+      else if (k === "f" && !s) a = "find";
+      else if (k === "h" && !s) a = "history";
+      else if (k === "j" && !s) a = "downloads";
+      else if (k === "o" && s) a = "bookmarks";
+      else if (k === "b" && s) a = "bookmarks_bar";
+      else if (k === "," ) a = "settings";
+      else if (k === "u" && !s) a = "view_source";
+      else if (k === "Tab") a = s ? "prev_tab" : "next_tab";
+      else if (k === "PageDown") a = "next_tab";
+      else if (k === "PageUp") a = "prev_tab";
+      else if (/^[1-9]$/.test(k) && !s) a = "tab_" + k;
+    } else if (e.altKey && !e.ctrlKey && k === "d") a = "focus_address";
+    else if (k === "F6") a = "focus_address";
+    else if (k === "F11") a = "fullscreen";
+    if (a) { e.preventDefault(); e.stopImmediatePropagation(); send({ kind: "shortcut", action: a }); }
   }, true);
 })();
 "#;
@@ -106,14 +156,83 @@ pub struct Tab {
     pub title: String,
     pub url: String,
     pub loading: bool,
+    /// Latest engine navigation result; only valid while `url` matches the
+    /// navigation it describes.
+    pub navigation: Option<crate::native::NavigationStatus>,
+    pub audible: bool,
+    pub muted: bool,
+    pub zoom: f64,
+}
+
+/// Built-in page name from a custom-protocol request URI, which arrives as
+/// `http://aurora.settings/...` or `aurora://settings/...`.
+fn page_of(uri: &http::Uri) -> String {
+    let host = uri.host().unwrap_or_default();
+    host.strip_prefix("aurora.").unwrap_or(host).to_string()
+}
+
+fn serve(context: &PageContext, request: &http::Request<Vec<u8>>) -> http::Response<Cow<'static, [u8]>> {
+    let lib = &context.lib;
+    let private = context.private;
+    let page = page_of(request.uri());
+    let path = request.uri().path();
+    let (status, mime, body): (u16, &str, Vec<u8>) = match (page.as_str(), path) {
+        // The name carries a fingerprint, so pages can cache the image.
+        (_, logo_path) if logo_path == browser::LOGO_PATH => {
+            (200, "image/png", browser::LOGO_PNG.to_vec())
+        }
+        ("newtab", "/background") => match std::fs::read(storage::background_file()) {
+            Ok(bytes) => (200, image_mime(&bytes), bytes),
+            Err(_) => (404, "text/plain", b"no background".to_vec()),
+        },
+        // Site icons the browser already cached, so the new tab page does
+        // not ask Google again for every tile.
+        ("newtab", "/favicon") => {
+            let host = request.uri().query().and_then(|q| q.split('&').find_map(|p| p.strip_prefix("h=")));
+            match host {
+                Some(host) if crate::favicons::safe_host(host) => {
+                    let path = storage::favicon_dir().join(format!("{host}.png"));
+                    match std::fs::read(&path) {
+                        Ok(bytes) if !bytes.is_empty() => (200, "image/png", bytes),
+                        _ => (404, "text/plain", b"no icon".to_vec()),
+                    }
+                }
+                _ => (400, "text/plain", b"bad host".to_vec()),
+            }
+        }
+        ("newtab", _) => (200, "text/html; charset=utf-8", pages::new_tab(&lib.borrow(), private).into_bytes()),
+        ("settings", _) => (200, "text/html; charset=utf-8", pages::settings(&lib.borrow()).into_bytes()),
+        _ => (404, "text/plain", b"Not found".to_vec()),
+    };
+    http::Response::builder()
+        .status(status)
+        .header("Content-Type", mime)
+        .header("Cache-Control", "no-store")
+        .body(Cow::Owned(body))
+        .expect("static response parts are valid")
+}
+
+fn image_mime(bytes: &[u8]) -> &'static str {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => "image/png",
+        [0xff, 0xd8, ..] => "image/jpeg",
+        [b'G', b'I', b'F', ..] => "image/gif",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
+        _ => "application/octet-stream",
+    }
 }
 
 impl Tab {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: TabId,
         url: &str,
+        private: bool,
+        // The tab is the one being shown; hidden tabs must not take keyboard
+        // focus away from the window.
+        focused: bool,
         context: &mut WebContext,
-        bookmarks: Rc<RefCell<Vec<Bookmark>>>,
+        lib: Shared,
         events: UnboundedSender<(TabId, PageEvent)>,
         window: &mut Window,
         cx: &mut App,
@@ -121,27 +240,30 @@ impl Tab {
         let send = move |event: PageEvent| {
             let _ = events.unbounded_send((id, event));
         };
+        let save_passwords = !private && lib.borrow().settings.save_passwords;
+        let background = crate::themes::css_bg(lib.borrow().palette);
+        // Hidden pages get less digital-rights-management CPU; the visible
+        // one gets the normal budget.
+        let throttling = if focused {
+            wry::BackgroundThrottlingPolicy::Suspend
+        } else {
+            wry::BackgroundThrottlingPolicy::Throttle
+        };
 
         let builder = WebViewBuilder::new_with_web_context(context)
             .with_url(url)
+            .with_incognito(private)
+            .with_background_color(background)
             .with_devtools(true)
             .with_hotkeys_zoom(true)
+            .with_background_throttling(throttling)
             .with_clipboard(true)
-            .with_focused(true)
+            .with_focused(focused)
             .with_back_forward_navigation_gestures(true)
             .with_initialization_script_for_main_only(PAGE_SCRIPT, true)
-            .with_custom_protocol("aurora".into(), move |_, request| {
-                let host = request.uri().host().unwrap_or_default();
-                let (status, body) = if host == "aurora.newtab" || host == "newtab" {
-                    (200, pages::new_tab(&bookmarks.borrow()))
-                } else {
-                    (404, "Not found".to_string())
-                };
-                http::Response::builder()
-                    .status(status)
-                    .header("Content-Type", "text/html; charset=utf-8")
-                    .body(Cow::Owned(body.into_bytes()))
-                    .expect("static response parts are valid")
+            .with_custom_protocol("aurora".into(), {
+                let page = page_context(&lib, private);
+                move |_, request| serve(&page, &request)
             })
             .with_document_title_changed_handler({
                 let send = send.clone();
@@ -162,6 +284,11 @@ impl Tab {
                     let Ok(msg) = serde_json::from_str::<serde_json::Value>(request.body()) else {
                         return;
                     };
+                    // Built-in page commands are only accepted from built-in pages.
+                    let from_internal = request.uri().scheme_str() == Some("http")
+                        && request.uri().host().is_some_and(|h| {
+                            h.strip_prefix("aurora.").is_some_and(|p| address::INTERNAL_PAGES.contains(&p))
+                        });
                     match msg["kind"].as_str() {
                         Some("url") => send(PageEvent::UrlMaybeChanged),
                         Some("shortcut") => {
@@ -169,6 +296,7 @@ impl Tab {
                                 send(PageEvent::Shortcut(s));
                             }
                         }
+                        Some("aurora") if from_internal => send(PageEvent::Internal(msg)),
                         _ => {}
                     }
                 }
@@ -194,41 +322,69 @@ impl Tab {
                     true
                 }
             })
-            .with_download_completed_handler(move |_url, path, success| {
-                send(PageEvent::DownloadFinished { path, success })
+            .with_download_completed_handler({
+                let send = send.clone();
+                move |_url, path, success| send(PageEvent::DownloadFinished { path, success })
             });
 
         let webview = WebView::build(builder, window, cx)?;
+        native::set_save_passwords(webview.raw(), save_passwords);
+        native::watch(webview.raw(), move |event| {
+            send(match event {
+                NativeEvent::Fullscreen(on) => PageEvent::Fullscreen(on),
+                NativeEvent::Audio(on) => PageEvent::Audio(on),
+            })
+        });
+
         Ok(Self {
             id,
             webview: cx.new(|_| webview),
             title: String::new(),
             url: url.to_string(),
             loading: true,
+            navigation: None,
+            audible: false,
+            muted: false,
+            zoom: 1.0,
         })
     }
 
     pub fn display_title(&self) -> String {
-        if !self.title.trim().is_empty() {
+        if !self.title.trim().is_empty() && !self.title.starts_with("http://aurora.") {
             self.title.clone()
-        } else if crate::address::is_new_tab(&self.url) {
-            "New Tab".into()
         } else {
-            self.url.clone()
+            match address::internal_page(&self.url) {
+                Some("newtab") => "New Tab".into(),
+                Some("settings") => "Settings".into(),
+                _ => self.url.clone(),
+            }
         }
+    }
+
+    pub fn raw<'a>(&self, cx: &'a App) -> &'a wry::WebView {
+        self.webview.read(cx).raw()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Shortcut;
+    use super::*;
 
     #[test]
     fn parses_shortcuts() {
         assert_eq!(Shortcut::parse("new_tab"), Some(Shortcut::NewTab));
+        assert_eq!(Shortcut::parse("find"), Some(Shortcut::Find));
         assert_eq!(Shortcut::parse("tab_3"), Some(Shortcut::SelectTab(3)));
         assert_eq!(Shortcut::parse("tab_0"), None);
-        assert_eq!(Shortcut::parse("tab_x"), None);
         assert_eq!(Shortcut::parse("navigate"), None);
+    }
+
+    #[test]
+    fn request_pages() {
+        let uri: http::Uri = "http://aurora.settings/x".parse().unwrap();
+        assert_eq!(page_of(&uri), "settings");
+        let uri: http::Uri = "aurora://newtab/background".parse().unwrap();
+        assert_eq!(page_of(&uri), "newtab");
+        assert_eq!(image_mime(&[0x89, b'P', b'N', b'G', 0]), "image/png");
     }
 }

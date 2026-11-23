@@ -2,22 +2,23 @@
 
 use url::Url;
 
-/// Search engine used for anything that does not look like an address.
-const SEARCH_URL: &str = "https://www.google.com/search?q=";
+/// Built-in pages. WebView2 serves the custom `aurora` protocol at
+/// `http://aurora.<page>/`; the address bar shows them as `aurora://<page>`.
+pub const INTERNAL_PAGES: &[&str] = &["newtab", "settings"];
 
-/// The built-in new tab page. WebView2 serves the custom `aurora` protocol
-/// at `http://aurora.<path>/`.
 pub const NEW_TAB_URL: &str = "http://aurora.newtab/";
+pub const SETTINGS_URL: &str = "http://aurora.settings/";
 
 /// Converts address bar input into a URL to load, or `None` for blank input.
-pub fn to_url(input: &str) -> Option<String> {
+/// `search` is a search URL template where `{}` stands for the query.
+pub fn to_url(input: &str, search: &str) -> Option<String> {
     let input = input.trim();
     if input.is_empty() {
         return None;
     }
 
-    if input.eq_ignore_ascii_case("aurora://newtab") || input.eq_ignore_ascii_case("about:newtab") {
-        return Some(NEW_TAB_URL.to_string());
+    if let Some(page) = internal_name(input) {
+        return Some(format!("http://aurora.{page}/"));
     }
 
     // Windows paths such as `C:\Users\me\page.html`.
@@ -28,10 +29,10 @@ pub fn to_url(input: &str) -> Option<String> {
     }
 
     if input.contains(char::is_whitespace) {
-        return Some(search_url(input));
+        return Some(search_url(search, input));
     }
 
-    // Explicit schemes: https://, file://, about:blank, mailto:, view-source: ...
+    // Explicit schemes: https://, file://, about:blank, view-source: ...
     if let Ok(url) = Url::parse(input) {
         let scheme = url.scheme();
         let known = matches!(
@@ -50,20 +51,43 @@ pub fn to_url(input: &str) -> Option<String> {
         }
     }
 
-    Some(search_url(input))
+    Some(search_url(search, input))
+}
+
+/// `aurora://settings`, `about:newtab` → `settings`, `newtab`.
+fn internal_name(input: &str) -> Option<&'static str> {
+    let lower = input.to_ascii_lowercase();
+    let name = lower
+        .strip_prefix("aurora://")
+        .or_else(|| lower.strip_prefix("about:"))
+        .or_else(|| lower.strip_prefix("http://aurora.").or_else(|| lower.strip_prefix("aurora.")))?;
+    let name = name.trim_end_matches('/');
+    INTERNAL_PAGES.iter().copied().find(|p| *p == name)
+}
+
+/// The built-in page name if `url` is one, e.g. `settings`.
+pub fn internal_page(url: &str) -> Option<&'static str> {
+    let rest = url.strip_prefix("http://aurora.")?;
+    let name = rest.split(['/', '?', '#']).next()?;
+    INTERNAL_PAGES.iter().copied().find(|p| *p == name)
+}
+
+pub fn is_internal(url: &str) -> bool {
+    internal_page(url).is_some()
 }
 
 /// Text to show in the address bar for a loaded URL.
 pub fn display(url: &str) -> String {
-    if is_new_tab(url) || url == "about:blank" {
-        String::new()
-    } else {
-        url.to_string()
+    match internal_page(url) {
+        Some("newtab") => String::new(),
+        Some(page) => format!("aurora://{page}"),
+        None if url == "about:blank" => String::new(),
+        None => url.to_string(),
     }
 }
 
 pub fn is_new_tab(url: &str) -> bool {
-    url.trim_end_matches('/') == NEW_TAB_URL.trim_end_matches('/')
+    internal_page(url) == Some("newtab")
 }
 
 /// Whether the page was loaded over a secure connection.
@@ -71,9 +95,9 @@ pub fn is_secure(url: &str) -> bool {
     url.starts_with("https://")
 }
 
-fn search_url(query: &str) -> String {
+pub fn search_url(template: &str, query: &str) -> String {
     let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
-    format!("{SEARCH_URL}{encoded}")
+    template.replace("{}", &encoded)
 }
 
 fn is_windows_path(input: &str) -> bool {
@@ -124,51 +148,57 @@ fn looks_like_host(input: &str) -> bool {
 mod tests {
     use super::*;
 
+    const G: &str = "https://www.google.com/search?q={}";
+
     #[test]
     fn blank_input() {
-        assert_eq!(to_url("   "), None);
+        assert_eq!(to_url("   ", G), None);
     }
 
     #[test]
     fn full_urls_pass_through() {
-        assert_eq!(to_url("https://example.com/a?b=1").unwrap(), "https://example.com/a?b=1");
-        assert_eq!(to_url("http://example.com").unwrap(), "http://example.com/");
-        assert_eq!(to_url("about:blank").unwrap(), "about:blank");
+        assert_eq!(to_url("https://example.com/a?b=1", G).unwrap(), "https://example.com/a?b=1");
+        assert_eq!(to_url("http://example.com", G).unwrap(), "http://example.com/");
+        assert_eq!(to_url("about:blank", G).unwrap(), "about:blank");
     }
 
     #[test]
     fn bare_domains_get_https() {
-        assert_eq!(to_url("example.com").unwrap(), "https://example.com/");
-        assert_eq!(to_url("en.wikipedia.org/wiki/Rust").unwrap(), "https://en.wikipedia.org/wiki/Rust");
-        assert_eq!(to_url("youtube.com").unwrap(), "https://youtube.com/");
+        assert_eq!(to_url("example.com", G).unwrap(), "https://example.com/");
+        assert_eq!(to_url("en.wikipedia.org/wiki/Rust", G).unwrap(), "https://en.wikipedia.org/wiki/Rust");
     }
 
     #[test]
     fn local_addresses_get_http() {
-        assert_eq!(to_url("localhost:3000").unwrap(), "http://localhost:3000/");
-        assert_eq!(to_url("127.0.0.1:8080/x").unwrap(), "http://127.0.0.1:8080/x");
-        assert_eq!(to_url("192.168.1.1").unwrap(), "http://192.168.1.1/");
+        assert_eq!(to_url("localhost:3000", G).unwrap(), "http://localhost:3000/");
+        assert_eq!(to_url("127.0.0.1:8080/x", G).unwrap(), "http://127.0.0.1:8080/x");
     }
 
     #[test]
     fn everything_else_is_a_search() {
-        assert_eq!(to_url("rust gpui").unwrap(), "https://www.google.com/search?q=rust+gpui");
-        assert_eq!(to_url("hello").unwrap(), "https://www.google.com/search?q=hello");
-        assert_eq!(to_url("what is 1.5").unwrap(), "https://www.google.com/search?q=what+is+1.5");
-        assert_eq!(to_url("c++").unwrap(), "https://www.google.com/search?q=c%2B%2B");
-        assert_eq!(to_url("file.txt1").unwrap(), "https://www.google.com/search?q=file.txt1");
+        assert_eq!(to_url("rust gpui", G).unwrap(), "https://www.google.com/search?q=rust+gpui");
+        assert_eq!(to_url("c++", G).unwrap(), "https://www.google.com/search?q=c%2B%2B");
+        assert_eq!(
+            to_url("hello", "https://duckduckgo.com/?q={}").unwrap(),
+            "https://duckduckgo.com/?q=hello"
+        );
     }
 
     #[test]
     fn windows_paths_become_file_urls() {
-        assert_eq!(to_url(r"C:\pages\index.html").unwrap(), "file:///C:/pages/index.html");
+        assert_eq!(to_url(r"C:\pages\index.html", G).unwrap(), "file:///C:/pages/index.html");
     }
 
     #[test]
-    fn new_tab_page() {
-        assert_eq!(to_url("aurora://newtab").unwrap(), NEW_TAB_URL);
+    fn internal_pages() {
+        assert_eq!(to_url("aurora://newtab", G).unwrap(), NEW_TAB_URL);
+        assert_eq!(to_url("aurora://settings/", G).unwrap(), SETTINGS_URL);
+        assert_eq!(to_url("about:settings", G).unwrap(), SETTINGS_URL);
+        assert_eq!(to_url("aurora://nope", G).unwrap(), "https://www.google.com/search?q=aurora%3A%2F%2Fnope");
         assert!(is_new_tab("http://aurora.newtab"));
+        assert_eq!(internal_page("http://aurora.settings/#about"), Some("settings"));
         assert_eq!(display(NEW_TAB_URL), "");
+        assert_eq!(display(SETTINGS_URL), "aurora://settings");
         assert_eq!(display("https://a.com/"), "https://a.com/");
     }
 }

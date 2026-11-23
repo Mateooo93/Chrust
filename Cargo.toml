@@ -19,10 +19,16 @@ serde_json = "1"
 anyhow = "1"
 log = "0.4"
 url = "2.5"
+ureq = "2.12"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
-# Same version wry uses; needed for the BOOL type in WebView2 history calls wry does not wrap.
+# Same versions wry uses, for WebView2 features wry does not wrap.
+webview2-com = "0.38"
 windows-core = "0.61"
+
+[build-dependencies]
+embed-resource = "3"
 
 [workspace]
 exclude = ["legacy"]
@@ -33,4 +39,9 @@ opt-level = 1
 opt-level = 2
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
+codegen-units = 1
+# Nothing in the browser needs to unwind out of a panic (no FFI callback
+# relies on it), so let the optimizer drop landing pads.
+panic = "abort"
+strip = "debuginfo"
