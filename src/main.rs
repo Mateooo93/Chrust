@@ -9,6 +9,7 @@ mod import;
 mod library;
 mod native;
 mod pages;
+mod proxy;
 mod settings;
 mod storage;
 mod tab;

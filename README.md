@@ -58,6 +58,16 @@ Actions and publishes them as a release (`.github/workflows/release.yml`).
 "Check for updates" reads that release. Bump `version` in `Cargo.toml` with the
 tag so the check recognises the build as newer.
 
+### Proxy
+
+Set `AURORA_PROXY` before starting Aurora to send everything through a proxy:
+the page engine, extension downloads, update checks and site icons.
+
+```powershell
+$env:AURORA_PROXY = "socks5://127.0.0.1:9150"   # or http://127.0.0.1:8080
+.	argeteleaseurora.exe
+```
+
 ## Where Aurora keeps things
 
 Everything lives in `%LOCALAPPDATA%\Aurora`: the WebView2 profile (cookies,

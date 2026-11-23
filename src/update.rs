@@ -17,7 +17,6 @@ use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use gpui_kit::App;
 
@@ -30,9 +29,9 @@ const SCRIPT_NAME: &str = "aurora-update.cmd";
 /// Seconds the restart script waits between checks for Aurora having closed.
 const POLL_SECONDS: &str = "2";
 
-fn agent() -> &'static ureq::Agent {
+fn agent() -> ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| ureq::AgentBuilder::new().timeout(Duration::from_secs(60)).build())
+    AGENT.get_or_init(crate::proxy::agent).clone()
 }
 
 /// Where the downloaded build waits for Aurora to close.

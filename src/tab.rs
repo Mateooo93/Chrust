@@ -10,7 +10,7 @@ use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebViewBuilder, http};
 
 use crate::library::Shared;
 use crate::native::{self, NativeEvent};
-use crate::{address, browser, extensions, pages, storage};
+use crate::{address, browser, extensions, pages, proxy::ProxyBuilder as _, storage};
 
 pub type TabId = u64;
 
@@ -288,6 +288,9 @@ impl Tab {
         let builder = WebViewBuilder::new_with_web_context(context)
             .with_url(url)
             .with_incognito(private)
+            // A proxy set for Aurora covers pages too, not just its own
+            // downloads.
+            .with_proxy_config_opt(crate::proxy::configured().map(|p| p.for_webview()))
             .with_background_color(background)
             .with_devtools(true)
             .with_hotkeys_zoom(true)

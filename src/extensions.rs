@@ -10,7 +10,6 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use crate::storage;
 
@@ -49,9 +48,9 @@ fn folder(id: &str) -> PathBuf {
     extensions_dir().join(id)
 }
 
-fn agent() -> &'static ureq::Agent {
+fn agent() -> ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| ureq::AgentBuilder::new().timeout(Duration::from_secs(120)).build())
+    AGENT.get_or_init(crate::proxy::agent).clone()
 }
 
 /// Downloads the store's current package for `id` and unpacks it, replacing
