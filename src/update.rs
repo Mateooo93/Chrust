@@ -36,6 +36,7 @@ fn agent() -> &'static ureq::Agent {
 }
 
 /// Where the downloaded build waits for Aurora to close.
+#[cfg(windows)]
 fn updates_dir() -> PathBuf {
     crate::storage::data_dir().join("Updates")
 }
@@ -158,48 +159,51 @@ fn install(version: &str, address: &str) -> Result<(), String> {
         return Err(format!("download it from github.com/{REPO} and replace Aurora by hand"));
     }
     #[cfg(windows)]
-    let dir = updates_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    let downloaded = dir.join(format!("aurora-{version}.exe"));
-    let response = agent().get(address).call().map_err(|e| format!("the download failed: {e}"))?;
-    let mut reader = response.into_reader().take(400 * 1024 * 1024);
-    let mut file = fs::File::create(&downloaded).map_err(|e| format!("could not save the update: {e}"))?;
-    std::io::copy(&mut reader, &mut file).map_err(|e| format!("the download failed: {e}"))?;
-    let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-    drop(file);
-    if size < 64 * 1024 {
-        let _ = fs::remove_file(&downloaded);
-        return Err("the downloaded file looks incomplete".into());
-    }
-
-    // Listed in the downloads panel like any other file.
     {
-        let lib = crate::library::shared();
-        let mut lib = lib.borrow_mut();
-        lib.download_started(downloaded.clone());
-        lib.download_finished(Some(downloaded.clone()), true);
-        lib.flush();
-    }
+        let dir = updates_dir();
+        fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        let downloaded = dir.join(format!("aurora-{version}.exe"));
+        let response = agent().get(address).call().map_err(|e| format!("the download failed: {e}"))?;
+        let mut reader = response.into_reader().take(400 * 1024 * 1024);
+        let mut file = fs::File::create(&downloaded).map_err(|e| format!("could not save the update: {e}"))?;
+        std::io::copy(&mut reader, &mut file).map_err(|e| format!("the download failed: {e}"))?;
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        drop(file);
+        if size < 64 * 1024 {
+            let _ = fs::remove_file(&downloaded);
+            return Err("the downloaded file looks incomplete".into());
+        }
 
-    // The setup exe unpacks beside itself when run, so later updates look
-    // for the new version next to this executable.
-    let exe = std::env::current_exe().map_err(|e| format!("could not find Aurora's own file: {e}"))?;
-    let install_dir = exe.parent().map(Path::to_path_buf).unwrap_or_else(|| dir.clone());
-    let script = install_dir.join(SCRIPT_NAME);
-    // A protected folder cannot hold the script; the new file is then left
-    // in Updates for the user to move.
-    if restart_script(&script, &downloaded, &exe).is_err() {
-        return Err(format!(
-            "the folder {} cannot be written to; the new version is in {}",
-            install_dir.display(),
-            downloaded.display()
-        ));
+        // Listed in the downloads panel like any other file.
+        {
+            let lib = crate::library::shared();
+            let mut lib = lib.borrow_mut();
+            lib.download_started(downloaded.clone());
+            lib.download_finished(Some(downloaded.clone()), true);
+            lib.flush();
+        }
+
+        // The setup exe unpacks beside itself when run, so later updates look
+        // for the new version next to this executable.
+        let exe = std::env::current_exe().map_err(|e| format!("could not find Aurora's own file: {e}"))?;
+        let install_dir = exe.parent().map(Path::to_path_buf).unwrap_or_else(|| dir.clone());
+        let script = install_dir.join(SCRIPT_NAME);
+        // A protected folder cannot hold the script; the new file is then left
+        // in Updates for the user to move.
+        if restart_script(&script, &downloaded, &exe).is_err() {
+            return Err(format!(
+                "the folder {} cannot be written to; the new version is in {}",
+                install_dir.display(),
+                downloaded.display()
+            ));
+        }
+        spawn_script(&script);
+        Ok(())
     }
-    spawn_script(&script);
-    Ok(())
 }
 
 /// Writes the script that swaps `downloaded` in for `exe` once Aurora exits.
+#[cfg(windows)]
 fn restart_script(script: &Path, downloaded: &Path, exe: &Path) -> std::io::Result<()> {
     let text = format!(
         "@echo off\n\
