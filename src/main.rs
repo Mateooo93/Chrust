@@ -3,6 +3,7 @@
 
 mod address;
 mod browser;
+mod extensions;
 mod favicons;
 mod import;
 mod library;

@@ -20,6 +20,8 @@ anyhow = "1"
 log = "0.4"
 url = "2.5"
 ureq = "2.12"
+# Chrome Web Store packages are zip files with a signed header in front.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]

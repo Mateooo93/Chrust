@@ -360,9 +360,7 @@ addEventListener("blur", hideMenu);
     )
 }
 
-pub fn settings(lib: &mut Library) -> String {
-    // The update result is shown once, on the page that asked for it.
-    let update = lib.update_message.take();
+pub fn settings(lib: &Library) -> String {
     let engines: Vec<_> = SEARCH_ENGINES.iter().map(|e| json!({ "id": e.id, "name": e.name })).collect();
     let backgrounds: Vec<_> = BACKGROUNDS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect();
     let data = json!({
@@ -373,10 +371,12 @@ pub fn settings(lib: &mut Library) -> String {
         "counts": { "bookmarks": lib.bookmarks.len(), "history": lib.history.len() },
         "version": env!("CARGO_PKG_VERSION"),
         "engineVersion": wry::webview_version().unwrap_or_else(|_| "unknown".into()),
+        "extensions": crate::extensions::list().into_iter()
+            .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
+            .collect::<Vec<_>>(),
         "dataDir": crate::storage::data_dir().display().to_string(),
         "releaseRepo": crate::update::REPO,
         "canInstall": crate::update::CAN_INSTALL,
-        "update": update,
     });
 
     format!(
@@ -436,6 +436,7 @@ code{{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px;color:var(
   <a href="#search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search</a>
   <a href="#browsing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5 5-2Z"/></svg>Browsing</a>
   <a href="#privacy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 2.8 8 7 10 4.2-2 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>Privacy</a>
+  <a href="#extensions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M10 3h4v4a2 2 0 1 0 4 0h3v4a2 2 0 1 1 0 4v4h-4a2 2 0 1 0-4 0h-4v-4a2 2 0 1 1 0-4V7h4a2 2 0 1 0 0-4Z"/></svg>Extensions</a>
   <a href="#import"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 15v5h14v-5"/></svg>Import</a>
   <a href="#shortcuts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h.01M11 9h.01M15 9h.01M7 13h.01M11 13h6"/></svg>Shortcuts</a>
   <a href="#about"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>About</a>
@@ -476,6 +477,16 @@ code{{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px;color:var(
     </div>
   </section>
 
+  <section id="extensions">
+    <h2>Extensions</h2><p class="sub">Extensions from the Chrome Web Store. The store's own install button cannot reach Aurora, so paste a store link here instead.</p>
+    <div class="card">
+      <div class="row"><div class="t"><b>Add an extension</b><small>Paste the link from its Chrome Web Store page, or its 32-letter id.</small></div>
+        <input id="ext-input" type="text" placeholder="chromewebstore.google.com/detail/..." spellcheck="false" autocomplete="off" style="max-width:330px;padding:9px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg)">
+        <button class="btn primary" id="ext-add">Install</button>
+        <button class="btn" data-cmd="open_webstore">Open Chrome Web Store</button></div>
+    </div>
+    <div class="card" id="ext-list" style="margin-top:12px"></div>
+  </section>
   <section id="import">
     <h2>Import</h2><p class="sub">Bring your bookmarks over from another browser.</p>
     <div class="card">
@@ -610,15 +621,47 @@ document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = () => {{
 
 $("ver").textContent = D.version; $("ever").textContent = D.engineVersion; $("datadir").textContent = D.dataDir;
 $("ghrepo").textContent = "github.com/" + D.releaseRepo;
-if (!D.canInstall) {{
-  // Other platforms get the release by hand; the button only checks.
+if (D.canInstall) {{
+  $("update").onclick = () => {{ __auroraToast("Checking GitHub for updates…"); window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "check_for_updates" }})); }};
+}} else {{
+  // Other platforms get the release by hand; the button just opens it.
   $("update").textContent = "Open releases";
   $("update").onclick = () => window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "open_releases" }}));
   $("updnote").textContent = "Get the newest version from the releases page.";
 }}
-$("update").onclick = () => {{ __auroraToast("Checking GitHub for updates…"); window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "check_for_updates" }})); }};
-if (D.update) __auroraToast(D.update);
+
 $("histcount").textContent = D.counts.history + " pages visited.";
+
+// Extensions: every folder Aurora has unpacked, with a remove button.
+const extList = $("ext-list");
+const renderExtensions = () => {{
+  extList.replaceChildren();
+  // Every extension added or removed through this page is listed after the
+  // reload, so the result of the last action arrives with `D.update`.
+  if (!D.extensions.length) {{
+    extList.append(el("div", "row", "No extensions installed yet."));
+    return;
+  }}
+  for (const ext of D.extensions) {{
+    const row = el("div", "row");
+    const t = el("div", "t"); t.append(el("b", null, ext.name), el("small", null, ext.id));
+    const remove = el("button", "btn", "Remove");
+    remove.onclick = () => {{ if (!confirm("Remove " + ext.name + "?")) return; send({{ cmd: "remove_extension", id: ext.id }}); reload(); }};
+    row.append(t, remove);
+    extList.append(row);
+  }}
+}};
+renderExtensions();
+// Results the browser stored for this page (an update check, an extension
+// install) arrive as JSON instead of being baked into the page, so a page
+// opened long after the action still shows it only once.
+fetch("/report").then((r) => r.json()).then((text) => {{ if (text) __auroraToast(text); }}).catch(() => {{}});
+$("ext-add").onclick = () => {{
+  const value = $("ext-input").value.trim();
+  if (!value) return __auroraToast("Paste a Chrome Web Store link first");
+  __auroraToast("Installing…");
+  window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "install_extension", input: value }}));
+}};
 
 $("bgurl").value = S.background_url || "";
 

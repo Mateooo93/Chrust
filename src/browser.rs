@@ -391,6 +391,56 @@ impl Browser {
             .evaluate_script(&format!("window.__auroraBookmarks && window.__auroraBookmarks({list})"));
     }
 
+    /// Downloads a Chrome Web Store extension and hands it to the engine.
+    /// The network part runs on its own thread; progress is shown on the
+    /// settings page that asked.
+    fn install_extension(&self, input: &str, tab: TabId, cx: &mut Context<Self>) {
+        let Some(id) = crate::extensions::id_from_input(input) else {
+            self.notify_page(tab, "That is not a Chrome Web Store link or extension id.", cx);
+            return;
+        };
+        #[cfg(not(windows))]
+        {
+            let _ = id;
+            self.notify_page(tab, "Extensions need the WebView2 engine, which only runs on Windows.", cx);
+            return;
+        }
+        #[cfg(windows)]
+        {
+            self.notify_page(tab, "Downloading the extension…", cx);
+            let (tx, rx) = futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::extensions::install(&id));
+            });
+            // The list on the settings page only shows extensions at start,
+            // so the page reloads once the result is in.
+            cx.spawn(async move |this, cx| {
+                let text = match rx.await.ok() {
+                    Some(Ok(name)) => format!("Extension installed: {name}"),
+                    Some(Err(err)) => format!("Could not install the extension: {err}"),
+                    None => "The extension download did not finish.".to_string(),
+                };
+                let _ = this.update_in(cx, |this, _, cx| {
+                    // Keep the result to show on the settings page, which
+                    // reloads to list the new extension.
+                    let settings = this.tab_index(tab).is_some_and(|i| {
+                        address::internal_page(&this.tabs[i].url) == Some("settings")
+                    });
+                    if settings {
+                        // The page shows it after reloading with the list.
+                        this.lib.borrow_mut().update_message = Some(text);
+                        if let Some(i) = this.tab_index(tab) {
+                            let _ = this.tabs[i].raw(cx).reload();
+                        }
+                    } else {
+                        this.show_notice(Icons::Box, text, cx);
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
     fn notify_page(&self, tab: TabId, message: &str, cx: &App) {
         if let Some(i) = self.tab_index(tab) {
             let msg = serde_json::to_string(message).unwrap_or_default();
@@ -1091,6 +1141,17 @@ impl Browser {
             }
             "open_devtools" => self.run(Cmd::DevTools, window, cx),
             "open_downloads" => self.run(Cmd::Panel(Panel::Downloads), window, cx),
+            "open_webstore" => self.open_tab("https://chromewebstore.google.com/", true, window, cx),
+            "install_extension" => {
+                let input = msg["input"].as_str().unwrap_or_default();
+                self.install_extension(input, tab, cx);
+            }
+            "remove_extension" => {
+                if let Some(id) = msg["id"].as_str() {
+                    crate::extensions::uninstall(id);
+                    cx.refresh_windows();
+                }
+            }
             "open_releases" => {
                 let url = format!("https://github.com/{}/releases/latest", crate::update::REPO);
                 self.open_tab(&url, true, window, cx);

@@ -10,7 +10,7 @@ use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebViewBuilder, http};
 
 use crate::library::Shared;
 use crate::native::{self, NativeEvent};
-use crate::{address, browser, pages, storage};
+use crate::{address, browser, extensions, pages, storage};
 
 pub type TabId = u64;
 
@@ -202,11 +202,14 @@ fn serve(context: &PageContext, request: &http::Request<Vec<u8>>) -> http::Respo
                 _ => (400, "text/plain", b"bad host".to_vec()),
             }
         }
+        // Everything the browser reports on the pages: the last update or
+        // extension result, shown once.
+        ("settings", "/report") | ("newtab", "/report") => {
+            let text = lib.borrow_mut().update_message.take().unwrap_or_default();
+            (200, "application/json", serde_json::to_vec(&text).unwrap_or_default())
+        }
         ("newtab", _) => (200, "text/html; charset=utf-8", pages::new_tab(&lib.borrow(), private).into_bytes()),
-        ("settings", _) => (200, "text/html; charset=utf-8", {
-            let mut lib = lib.borrow_mut();
-            pages::settings(&mut lib).into_bytes()
-        }),
+        ("settings", _) => (200, "text/html; charset=utf-8", pages::settings(&lib.borrow()).into_bytes()),
         _ => (404, "text/plain", b"Not found".to_vec()),
     };
     // The logo only changes with a build, so it can be cached for good (its
@@ -334,6 +337,24 @@ impl Tab {
                 let send = send.clone();
                 move |_url, path, success| send(PageEvent::DownloadFinished { path, success })
             });
+        // Extensions are a Windows feature: WebView2 loads every folder in
+        // this path as each view starts. The browser arguments repeat wry's
+        // defaults, plus the extension feature for runtimes that need it
+        // written out.
+        #[cfg(windows)]
+        let builder = {
+            use wry::WebViewBuilderExtWindows as _;
+            let folder = extensions::extensions_dir();
+            let mut builder = builder
+                .with_browser_extensions_enabled(true)
+                .with_additional_browser_args(
+                    "--enable-features=msExtensions,msEdgeExtensions --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+                );
+            if std::fs::create_dir_all(&folder).is_ok() {
+                builder = builder.with_extensions_path(folder);
+            }
+            builder
+        };
 
         let webview = WebView::build(builder, window, cx)?;
         native::set_save_passwords(webview.raw(), save_passwords);
