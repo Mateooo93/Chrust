@@ -36,7 +36,7 @@ actions!(
         NewTab, NewWindow, NewPrivateWindow, CloseTab, ReopenClosedTab, NextTab, PrevTab,
         FocusAddress, Reload, GoBack, GoForward, GoHome, ToggleBookmark, OpenDevTools, Find,
         ShowHistory, ShowDownloads, ShowBookmarks, ShowMenu, OpenSettings, ToggleBookmarksBar,
-        ViewSource, ToggleFullscreen, ZoomIn, ZoomOut, ZoomReset, Print, CloseOverlays,
+        ViewSource, CheckForUpdates, ToggleFullscreen, ZoomIn, ZoomOut, ZoomReset, Print, CloseOverlays,
     ]
 );
 
@@ -169,6 +169,7 @@ impl From<Shortcut> for Cmd {
             Shortcut::Settings => Cmd::Settings,
             Shortcut::ToggleBookmarksBar => Cmd::ToggleBookmarksBar,
             Shortcut::ViewSource => Cmd::ViewSource,
+            Shortcut::CheckForUpdates => Cmd::CheckForUpdates,
             Shortcut::Fullscreen => Cmd::Fullscreen,
         }
     }
@@ -708,6 +709,7 @@ impl Browser {
                 }
                 cx.refresh_windows();
             }
+            Cmd::CheckForUpdates => crate::update::check_and_install(self.lib.clone(), cx),
             Cmd::ViewSource => {
                 let url = self.active_url();
                 // Only real sites have source to show; built-in pages and
@@ -1087,6 +1089,11 @@ impl Browser {
                 self.notify_page(tab, &text, cx);
             }
             "open_devtools" => self.run(Cmd::DevTools, window, cx),
+            "open_downloads" => self.run(Cmd::Panel(Panel::Downloads), window, cx),
+            "check_for_updates" => {
+                self.run(Cmd::CheckForUpdates, window, cx);
+                self.notify_page(tab, "Checking GitHub for updates…", cx);
+            }
             "remove_bookmark" => {
                 if let Some(url) = msg["url"].as_str() {
                     self.lib.borrow_mut().remove_bookmark(url);
@@ -1755,6 +1762,7 @@ impl Browser {
             .child(self.menu_row("m-copy", Icons::Copy, "Copy page link", "", Cmd::CopyUrl, cx))
             .child(sep())
             .child(self.menu_row("m-settings", Icons::Settings, "Settings", "Ctrl+,", Cmd::Settings, cx))
+            .child(self.menu_row("m-update", Icons::Download, "Check for updates", "", Cmd::CheckForUpdates, cx))
     }
 
     fn list_row(&self, id: ElementId, icon: AnyElement, title: String, detail: String, cx: &App) -> Stateful<Div> {
@@ -2054,6 +2062,7 @@ impl Render for Browser {
             OpenSettings => Cmd::Settings,
             ToggleBookmarksBar => Cmd::ToggleBookmarksBar,
             ViewSource => Cmd::ViewSource,
+            CheckForUpdates => Cmd::CheckForUpdates,
             ToggleFullscreen => Cmd::Fullscreen,
             ZoomIn => Cmd::ZoomIn,
             ZoomOut => Cmd::ZoomOut,

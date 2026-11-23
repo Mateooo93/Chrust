@@ -41,6 +41,9 @@ pub struct Library {
     pub icons: HashMap<String, IconState>,
     sessions: BTreeMap<u64, WindowSession>,
     next_window: u64,
+    /// The last result of an update check, shown on the settings page and
+    /// dropped from memory once the page has been served.
+    pub update_message: Option<String>,
     history_dirty: bool,
     history_dirty_since: Option<Instant>,
     session_dirty: bool,
@@ -70,6 +73,7 @@ pub fn init(cx: &mut App) -> Shared {
         icons: HashMap::new(),
         sessions: BTreeMap::new(),
         next_window: 1,
+        update_message: None,
         history_dirty: false,
         history_dirty_since: None,
         session_dirty: false,

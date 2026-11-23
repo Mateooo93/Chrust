@@ -12,6 +12,7 @@ mod settings;
 mod storage;
 mod tab;
 mod themes;
+mod update;
 
 fn main() {
     // gpui-webview needs this on Windows, or the WebView2 page is never drawn.

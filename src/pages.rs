@@ -360,7 +360,9 @@ addEventListener("blur", hideMenu);
     )
 }
 
-pub fn settings(lib: &Library) -> String {
+pub fn settings(lib: &mut Library) -> String {
+    // The update result is shown once, on the page that asked for it.
+    let update = lib.update_message.take();
     let engines: Vec<_> = SEARCH_ENGINES.iter().map(|e| json!({ "id": e.id, "name": e.name })).collect();
     let backgrounds: Vec<_> = BACKGROUNDS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect();
     let data = json!({
@@ -372,6 +374,8 @@ pub fn settings(lib: &Library) -> String {
         "version": env!("CARGO_PKG_VERSION"),
         "engineVersion": wry::webview_version().unwrap_or_else(|_| "unknown".into()),
         "dataDir": crate::storage::data_dir().display().to_string(),
+        "releaseRepo": crate::update::REPO,
+        "update": update,
     });
 
     format!(
@@ -402,7 +406,7 @@ h2{{font-size:22px;font-weight:600;margin:0 0 4px;letter-spacing:-.3px}}
 .pick:hover{{transform:translateY(-2px)}} .pick.on{{border-color:var(--accent)}}
 .pick .pv{{height:78px;border-radius:9px;position:relative;overflow:hidden;display:flex;align-items:flex-end;gap:5px;padding:9px;border:1px solid #0001}}
 .pick .pv span{{width:18px;height:18px;border-radius:50%;box-shadow:0 1px 3px #0003}}
-.pick .bg{{position:absolute;inset:0;z-index:0;border-radius:inherit}}
+.pick .bg{{position:absolute;inset:0;z-index:0;border-radius:9px}}
 .pick .label{{display:block;padding:8px 4px 2px;font-size:13px;font-weight:500}}
 .switch{{position:relative;width:44px;height:26px;flex:none}}
 .switch input{{opacity:0;width:0;height:0}}
@@ -487,7 +491,10 @@ code{{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px;color:var(
     <h2>About</h2><p class="sub">A fast browser with a native Rust interface.</p>
     <div class="card">
       <div class="row"><div class="t"><b>Aurora <span id="ver"></span></b><small>Interface built with GPUI · pages rendered by Microsoft Edge WebView2 <span id="ever"></span></small></div>
-        <button class="btn" data-cmd="open_devtools">Open DevTools</button></div>
+        <button class="btn" data-cmd="open_devtools">Open DevTools</button>
+        <button class="btn" id="update">Check for updates</button></div>
+      <div class="row"><div class="t"><b>Updates</b><small>From <span id="ghrepo"></span>. Aurora replaces only its own files, keeps your data, and restarts when done.</small></div>
+        <button class="btn" data-cmd="open_downloads">Show downloads</button></div>
     </div>
   </section>
 </div>
@@ -601,6 +608,9 @@ document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = () => {{
 .forEach(([a, k]) => {{ $("keys").append(el("span", null, a), el("kbd", null, k)); }});
 
 $("ver").textContent = D.version; $("ever").textContent = D.engineVersion; $("datadir").textContent = D.dataDir;
+$("ghrepo").textContent = "github.com/" + D.releaseRepo;
+$("update").onclick = () => window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "check_for_updates" }}));
+if (D.update) __auroraToast(D.update);
 $("histcount").textContent = D.counts.history + " pages visited.";
 
 $("bgurl").value = S.background_url || "";

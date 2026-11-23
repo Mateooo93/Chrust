@@ -1,0 +1,59 @@
+name: Release
+
+# Pushing a tag like v0.2.0 builds Aurora and publishes two files:
+#   aurora.exe        the browser itself; "Check for updates" installs this
+#   aurora-setup.exe  per-user installer (Start menu and Apps and Features)
+#
+# The setup exe is tools/installer/aurora-installer.ps1 compiled with ps2exe,
+# plus a zip holding the browser and its icon appended after the exe's own
+# bytes. The script opens that zip from inside itself (a zip reader searches
+# the end of the file), so one file carries everything and needs nothing
+# installed on the user's machine.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $env:AURORA_VERSION = $version
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          Copy-Item target/release/aurora.exe aurora.exe
+          Copy-Item target/release/aurora.exe staging/aurora.exe
+          Copy-Item assets/aurora.ico staging/aurora.ico
+          Install-Module ps2exe -Scope CurrentUser -Force -AllowClobber
+          Import-Module ps2exe
+          Invoke-ps2exe -inputFile tools/installer/aurora-installer.ps1 -outputFile aurora-setup.exe -noConsole -iconFile assets/aurora.ico
+          Compress-Archive -Path staging/aurora.exe,staging/aurora.ico -DestinationPath staging/payload.zip
+          $bytes = [System.IO.File]::ReadAllBytes("$PWD/staging/payload.zip")
+          $stream = [System.IO.File]::Open("$PWD/aurora-setup.exe", [System.IO.FileMode]::Append)
+          $stream.Write($bytes, 0, $bytes.Length)
+          $stream.Close()
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          gh release create "${{ github.ref_name }}" aurora.exe aurora-setup.exe --title "Aurora $version" --generate-notes

@@ -73,6 +73,7 @@ pub enum Shortcut {
     ToggleBookmarksBar,
     ViewSource,
     Fullscreen,
+    CheckForUpdates,
 }
 
 impl Shortcut {
@@ -94,6 +95,7 @@ impl Shortcut {
             "settings" => Self::Settings,
             "bookmarks_bar" => Self::ToggleBookmarksBar,
             "view_source" => Self::ViewSource,
+            "check_for_updates" => Self::CheckForUpdates,
             "fullscreen" => Self::Fullscreen,
             _ => {
                 let n: usize = action.strip_prefix("tab_")?.parse().ok()?;
@@ -201,13 +203,19 @@ fn serve(context: &PageContext, request: &http::Request<Vec<u8>>) -> http::Respo
             }
         }
         ("newtab", _) => (200, "text/html; charset=utf-8", pages::new_tab(&lib.borrow(), private).into_bytes()),
-        ("settings", _) => (200, "text/html; charset=utf-8", pages::settings(&lib.borrow()).into_bytes()),
+        ("settings", _) => (200, "text/html; charset=utf-8", {
+            let mut lib = lib.borrow_mut();
+            pages::settings(&mut lib).into_bytes()
+        }),
         _ => (404, "text/plain", b"Not found".to_vec()),
     };
+    // The logo only changes with a build, so it can be cached for good (its
+    // address carries the version). Everything else reflects live data.
+    let cache = if path == browser::LOGO_PATH { "public, max-age=31536000, immutable" } else { "no-store" };
     http::Response::builder()
         .status(status)
         .header("Content-Type", mime)
-        .header("Cache-Control", "no-store")
+        .header("Cache-Control", cache)
         .body(Cow::Owned(body))
         .expect("static response parts are valid")
 }
