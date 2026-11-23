@@ -1,5 +1,5 @@
-# Aurora installer. The release build compiles this with ps2exe into
-# aurora-setup.exe and appends a zip holding `aurora.exe` and `aurora.ico`.
+# Chrust installer. The release build compiles this with ps2exe into
+# chrust-setup.exe and appends a zip holding `chrust.exe` and `chrust.ico`.
 #
 # A zip reader finds its directory by searching backwards from the end of the
 # file, so the appended zip is readable from inside the setup executable by
@@ -16,20 +16,22 @@ param([switch]$quiet)
 
 Add-Type -AssemblyName System.Windows.Forms
 $ErrorActionPreference = 'Stop'
-$appDir = Join-Path $env:LOCALAPPDATA 'Programs\Aurora'
-$target = Join-Path $appDir 'aurora.exe'
-$iconTarget = Join-Path $appDir 'aurora.ico'
+$appDir = Join-Path $env:LOCALAPPDATA 'Programs\Chrust'
+$target = Join-Path $appDir 'chrust.exe'
+$iconTarget = Join-Path $appDir 'chrust.ico'
 $startDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
-$startLink = Join-Path $startDir 'Aurora.lnk'
-$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Aurora'
-$version = if ($env:AURORA_VERSION) { $env:AURORA_VERSION } else { '0.0.0' }
+$startLink = Join-Path $startDir 'Chrust.lnk'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Chrust'
+# ps2exe embeds this script, so the release build writes the version in as
+# a constant before packaging.
+$version = '0.0.0'
 
 function Get-SelfPath {
     $process = [System.Diagnostics.Process]::GetCurrentProcess()
     return $process.MainModule.FileName
 }
 
-# Pulls aurora.exe and aurora.ico out of the zip appended to this executable.
+# Pulls chrust.exe and chrust.ico out of the zip appended to this executable.
 #
 # The setup exe is this script (compiled), with the zip appended. The zip's
 # end record says how large its directory is and how far it begins; both are
@@ -38,8 +40,8 @@ function Get-SelfPath {
 function Expand-Payload([string]$folder) {
     $self = Get-SelfPath
     $bytes = [System.IO.File]::ReadAllBytes($self)
-    $exe = Join-Path $folder 'aurora.exe'
-    $icon = Join-Path $folder 'aurora.ico'
+    $exe = Join-Path $folder 'chrust.exe'
+    $icon = Join-Path $folder 'chrust.ico'
     if ((Test-Path $exe) -and ((Get-Item $exe).Length -gt 100KB)) {
         return @{ Exe = $exe; Icon = $icon }
     }
@@ -71,7 +73,7 @@ function Expand-Payload([string]$folder) {
         $commentLen = [BitConverter]::ToUInt16($bytes, $at + 32)
         $local = (Get-UInt32 $bytes ($at + 42))
         $name = [System.IO.Path]::GetFileName([System.Text.Encoding]::UTF8.GetString($bytes, $at + 46, $nameLen))
-        if ($name -eq 'aurora.exe' -or $name -eq 'aurora.ico') {
+        if ($name -eq 'chrust.exe' -or $name -eq 'chrust.ico') {
             # The local header repeats its name and extra lengths.
             $head = $zipStart + $local
             $dataAt = $head + 30 + [BitConverter]::ToUInt16($bytes, $head + 26) + [BitConverter]::ToUInt16($bytes, $head + 28)
@@ -98,7 +100,7 @@ function Expand-Bytes([byte[]]$raw) {
     return $output.ToArray()
 }
 
-function Install-Aurora($files) {
+function Install-Chrust($files) {
     if (-not (Test-Path $files.Exe)) { throw 'The installer is missing the browser files.' }
     New-Item -ItemType Directory -Force -Path $appDir | Out-Null
     New-Item -ItemType Directory -Force -Path $startDir | Out-Null
@@ -110,13 +112,13 @@ function Install-Aurora($files) {
     $link.TargetPath = $target
     $link.WorkingDirectory = $appDir
     if (Test-Path $iconTarget) { $link.IconLocation = $iconTarget }
-    $link.Description = 'Aurora browser'
+    $link.Description = 'Chrust browser'
     $link.Save()
 
     New-Item -Path $uninstallKey -Force | Out-Null
-    Set-ItemProperty $uninstallKey -Name DisplayName -Value 'Aurora'
+    Set-ItemProperty $uninstallKey -Name DisplayName -Value 'Chrust'
     Set-ItemProperty $uninstallKey -Name DisplayVersion -Value $version
-    Set-ItemProperty $uninstallKey -Name Publisher -Value 'Aurora'
+    Set-ItemProperty $uninstallKey -Name Publisher -Value 'Chrust'
     Set-ItemProperty $uninstallKey -Name InstallLocation -Value $appDir
     Set-ItemProperty $uninstallKey -Name DisplayIcon -Value $target
     Set-ItemProperty $uninstallKey -Name NoModify -Type DWord -Value 1
@@ -124,11 +126,11 @@ function Install-Aurora($files) {
     $uninstall = Join-Path $appDir 'uninstall.cmd'
     $lines = @(
         '@echo off',
-        'rem Removes Aurora. Bookmarks, history and settings are kept.',
-        'reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Aurora" /f >nul 2>&1',
+        'rem Removes Chrust. Bookmarks, history and settings are kept.',
+        'reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Chrust" /f >nul 2>&1',
         "del `"$startLink`" >nul 2>&1",
-        'del "%~dp0aurora.exe" >nul 2>&1',
-        'del "%~dp0aurora.ico" >nul 2>&1',
+        'del "%~dp0chrust.exe" >nul 2>&1',
+        'del "%~dp0chrust.ico" >nul 2>&1',
         'del "%~dp0uninstall.cmd" >nul 2>&1',
         'rd "%~dp0" >nul 2>&1'
     )
@@ -140,30 +142,30 @@ function Install-Aurora($files) {
 try {
     if (-not $quiet) {
         $answer = [System.Windows.Forms.MessageBox]::Show(
-            "Install Aurora $version for your account?`n`nBookmarks, history and settings are kept if you already use Aurora.",
-            'Aurora setup',
+            "Install Chrust $version for your account?`n`nBookmarks, history and settings are kept if you already use Chrust.",
+            'Chrust setup',
             [System.Windows.Forms.MessageBoxButtons]::OKCancel,
             [System.Windows.Forms.MessageBoxIcon]::Information)
         if ($answer -ne [System.Windows.Forms.DialogResult]::OK) { exit 0 }
     }
-    $staging = Join-Path $env:TEMP ('aurora-setup-' + [guid]::NewGuid().ToString('N'))
+    $staging = Join-Path $env:TEMP ('chrust-setup-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $staging | Out-Null
     try {
         $files = Expand-Payload $staging
-        $exe = Install-Aurora $files
+        $exe = Install-Chrust $files
     } finally {
         Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
     }
     if (-not $quiet) {
         $start = [System.Windows.Forms.MessageBox]::Show(
-            'Aurora is installed. Start it now?', 'Aurora setup',
+            'Chrust is installed. Start it now?', 'Chrust setup',
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Information)
         if ($start -eq [System.Windows.Forms.DialogResult]::Yes) { Start-Process $exe }
     }
 } catch {
     if (-not $quiet) {
-        [System.Windows.Forms.MessageBox]::Show("Aurora could not be installed:`n$_", 'Aurora setup', 'OK', 'Error') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("Chrust could not be installed:`n$_", 'Chrust setup', 'OK', 'Error') | Out-Null
     }
     exit 1
 }

@@ -479,7 +479,7 @@ impl Browser {
                     Icons::TriangleAlert,
                     format!(
                         "Could not start the page engine (WebView2): {err}. \
-                         Install the WebView2 Runtime from Microsoft and restart Aurora."
+                         Install the WebView2 Runtime from Microsoft and restart Chrust."
                     ),
                     cx,
                 );
@@ -766,7 +766,7 @@ impl Browser {
                 // Only real sites have source to show; built-in pages and
                 // blank tabs say why instead of doing nothing.
                 if address::is_internal(&url) {
-                    self.show_notice(Icons::Code, "Built-in Aurora pages have no page source.", cx);
+                    self.show_notice(Icons::Code, "Built-in Chrust pages have no page source.", cx);
                 } else if url.starts_with("http") {
                     self.open_tab(&format!("view-source:{url}"), true, window, cx);
                 } else {
@@ -864,7 +864,7 @@ impl Browser {
                 let from = result.profiles.join(", ");
                 match (added, result.found) {
                     (_, 0) => format!("No bookmarks found in Chrome ({from})."),
-                    (0, found) => format!("All {found} Chrome bookmarks are already in Aurora."),
+                    (0, found) => format!("All {found} Chrome bookmarks are already in Chrust."),
                     (added, _) => format!("Imported {added} bookmarks from Chrome ({from})."),
                 }
             }
@@ -882,7 +882,7 @@ impl Browser {
     }
 
     fn update_window_title(&self, window: &mut Window) {
-        let name = if self.private { "Aurora Private" } else { "Aurora" };
+        let name = if self.private { "Chrust Private" } else { "Chrust" };
         let title = match self.active_tab() {
             Some(tab) => format!("{} - {name}", tab.display_title()),
             None => name.into(),
@@ -2169,12 +2169,15 @@ impl Render for Browser {
     }
 }
 
-pub const LOGO_PNG: &[u8] = include_bytes!("../assets/aurora-64.png");
+/// The logo drawn in tabs and on the built-in pages. Replace
+/// `assets/chrust/chrust-64.png` to rebrand; Cargo does not track that file,
+/// so run `cargo clean -p chrust` afterwards.
+pub const LOGO_PNG: &[u8] = include_bytes!("../assets/chrust/chrust-64.png");
 /// Address of the logo on built-in pages. Changes with every build so the
 /// webview can cache it instead of refetching it for each page and frame.
 pub const LOGO_PATH: &str = concat!("/logo-", env!("CARGO_PKG_VERSION"), ".png");
 
-/// The Aurora logo, for built-in pages in tabs and the address bar.
+/// The Chrust logo, for built-in pages in tabs and the address bar.
 fn logo() -> Img {
     static IMAGE: std::sync::LazyLock<std::sync::Arc<Image>> =
         std::sync::LazyLock::new(|| std::sync::Arc::new(Image::from_bytes(ImageFormat::Png, LOGO_PNG.to_vec())));

@@ -1,5 +1,14 @@
 # Changes
 
+## 0.4.0 – Chrust
+
+- Renamed from Aurora to Chrust, with a new logo (window icon, tab strip,
+  built-in pages, installer). Bookmarks, history and settings are kept: they
+  live in the same data folder as before.
+- Chrome Web Store extensions: install from a store link in Settings >
+  Extensions, or from the store's own install button.
+- A proxy can be set for the whole browser with `AURORA_PROXY`.
+
 ## 0.2.0 (unreleased)
 
 - New loading indicator behaviour: failed and cancelled page loads now end the

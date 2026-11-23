@@ -1,2 +1,2 @@
 // GPUI loads the window and taskbar icon from resource ID 1.
-1 ICON "assets/aurora.ico"
+1 ICON "assets/chrust/chrust.ico"

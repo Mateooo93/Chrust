@@ -1,4 +1,4 @@
-//! Checking GitHub for a newer Aurora and installing it.
+//! Checking GitHub for a newer Chrust and installing it.
 //!
 //! Replacing the running executable is Windows-only; on other platforms the
 //! menu entry is hidden and the settings page says to get the new version
@@ -7,7 +7,7 @@
 //! "Check for updates" asks GitHub for the newest release that ships an
 //! executable. When its version is newer than this build, the file downloads
 //! into `%LOCALAPPDATA%\Aurora\Updates` (and shows up in the downloads panel
-//! like any other download), then a small script waits for Aurora to close,
+//! like any other download), then a small script waits for Chrust to close,
 //! swaps the executable in place, and starts it again. Only the executable is
 //! replaced: the profile, history and settings stay where they are. If moving
 //! the new file fails (a write-protected install folder, for example), it is
@@ -25,8 +25,8 @@ use crate::library::Shared;
 /// The repository releases are published from.
 pub const REPO: &str = "Mateooo93/aurora";
 const API: &str = "https://api.github.com/repos/Mateooo93/aurora/releases/latest";
-const SCRIPT_NAME: &str = "aurora-update.cmd";
-/// Seconds the restart script waits between checks for Aurora having closed.
+const SCRIPT_NAME: &str = "chrust-update.cmd";
+/// Seconds the restart script waits between checks for Chrust having closed.
 const POLL_SECONDS: &str = "2";
 
 fn agent() -> ureq::Agent {
@@ -34,7 +34,7 @@ fn agent() -> ureq::Agent {
     AGENT.get_or_init(crate::proxy::agent).clone()
 }
 
-/// Where the downloaded build waits for Aurora to close.
+/// Where the downloaded build waits for Chrust to close.
 #[cfg(windows)]
 fn updates_dir() -> PathBuf {
     crate::storage::data_dir().join("Updates")
@@ -69,7 +69,7 @@ fn request() -> ureq::Request {
     ureq::get(API)
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
-        .set("User-Agent", concat!("Aurora/", env!("CARGO_PKG_VERSION")))
+        .set("User-Agent", concat!("Chrust/", env!("CARGO_PKG_VERSION")))
 }
 
 /// The whole update check and download; returns the text to show.
@@ -93,7 +93,7 @@ fn check() -> String {
             let name = |a: &&serde_json::Value| a["name"].as_str().unwrap_or_default().to_ascii_lowercase();
             assets
                 .iter()
-                .find(|a| name(a) == "aurora.exe")
+                .find(|a| name(a) == "chrust.exe")
                 .or_else(|| assets.iter().find(|a| name(a).ends_with(".exe") && !name(a).contains("setup")))
                 .and_then(|a| a["browser_download_url"].as_str())
                 .map(str::to_string)
@@ -103,11 +103,11 @@ fn check() -> String {
         _ => return no_release(),
     };
     if !is_newer(&version, current) {
-        return format!("Aurora {current} is up to date. GitHub's newest release is {version}.");
+        return format!("Chrust {current} is up to date. GitHub's newest release is {version}.");
     }
     match install(&version, &address) {
-        Ok(()) => format!("Aurora {version} downloaded. It replaces this copy and starts again when you close Aurora."),
-        Err(err) => format!("Aurora {version} is available, but the update could not be prepared: {err}"),
+        Ok(()) => format!("Chrust {version} downloaded. It replaces this copy and starts again when you close Chrust."),
+        Err(err) => format!("Chrust {version} is available, but the update could not be prepared: {err}"),
     }
 }
 
@@ -146,7 +146,7 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 
 /// Downloads the new build and sets up the restart.
 ///
-/// An installed copy (under `%LOCALAPPDATA%\Programs\Aurora`) receives the
+/// An installed copy (under `%LOCALAPPDATA%\Programs\Chrust`) receives the
 /// browser executable, which the script swaps in place; the rest of the
 /// install and the shortcuts stay valid. A portable copy is updated the same
 /// way, in its own folder. The `aurora-setup.exe` installer is never picked
@@ -155,13 +155,13 @@ fn install(version: &str, address: &str) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let _ = (version, address);
-        return Err(format!("download it from github.com/{REPO} and replace Aurora by hand"));
+        return Err(format!("download it from github.com/{REPO} and replace Chrust by hand"));
     }
     #[cfg(windows)]
     {
         let dir = updates_dir();
         fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-        let downloaded = dir.join(format!("aurora-{version}.exe"));
+        let downloaded = dir.join(format!("chrust-{version}.exe"));
         let response = agent().get(address).call().map_err(|e| format!("the download failed: {e}"))?;
         let mut reader = response.into_reader().take(400 * 1024 * 1024);
         let mut file = fs::File::create(&downloaded).map_err(|e| format!("could not save the update: {e}"))?;
@@ -184,7 +184,7 @@ fn install(version: &str, address: &str) -> Result<(), String> {
 
         // The setup exe unpacks beside itself when run, so later updates look
         // for the new version next to this executable.
-        let exe = std::env::current_exe().map_err(|e| format!("could not find Aurora's own file: {e}"))?;
+        let exe = std::env::current_exe().map_err(|e| format!("could not find Chrust's own file: {e}"))?;
         let install_dir = exe.parent().map(Path::to_path_buf).unwrap_or_else(|| dir.clone());
         let script = install_dir.join(SCRIPT_NAME);
         // A protected folder cannot hold the script; the new file is then left
@@ -201,19 +201,19 @@ fn install(version: &str, address: &str) -> Result<(), String> {
     }
 }
 
-/// Writes the script that swaps `downloaded` in for `exe` once Aurora exits.
+/// Writes the script that swaps `downloaded` in for `exe` once Chrust exits.
 #[cfg(windows)]
 fn restart_script(script: &Path, downloaded: &Path, exe: &Path) -> std::io::Result<()> {
     let text = format!(
         "@echo off\n\
-         rem Written by Aurora's update check. Waits for Aurora to close,\n\
-         rem puts the new build in place, removes itself and starts Aurora.\n\
+         rem Written by Chrust's update check. Waits for Chrust to close,\n\
+         rem puts the new build in place, removes itself and starts Chrust.\n\
          setlocal\n\
          set \"TARGET={exe}\"\n\
          set \"NEW={downloaded}\"\n\
          set \"SELF=%~f0\"\n\
          for /L %%i in (1,1,90) do (\n\
-         \x20 tasklist /FI \"IMAGENAME eq aurora.exe\" 2>nul | find /I \"aurora.exe\" >nul || goto swap\n\
+         \x20 tasklist /FI \"IMAGENAME eq chrust.exe\" 2>nul | find /I \"chrust.exe\" >nul || goto swap\n\
          \x20 ping -n {POLL_SECONDS} 127.0.0.1 >nul 2>&1\n\
          )\n\
          goto failed\n\

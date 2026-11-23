@@ -15,7 +15,7 @@ use crate::storage::Bookmark;
 
 pub struct ImportResult {
     pub added: Vec<Bookmark>,
-    /// Bookmarks found in Chrome, including ones Aurora already had.
+    /// Bookmarks found in Chrome, including ones Chrust already had.
     pub found: usize,
     /// Display names of the Chrome profiles that were read.
     pub profiles: Vec<String>,

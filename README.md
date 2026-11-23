@@ -1,20 +1,20 @@
-# Aurora
+# Chrust
 
 A fast, clean web browser for Windows. The interface is built in Rust with GPUI;
 pages are rendered by Microsoft's Edge WebView2 engine, which ships with Windows,
-so Aurora installs as a single small executable.
+so Chrust installs as a single small executable.
 
 ## Install
 
-Download `aurora-setup.exe` from the [latest release](../../releases/latest) and
+Download `chrust-setup.exe` from the [latest release](../../releases/latest) and
 run it. It installs for your account only, adds a Start menu entry and an entry
 in Apps and Features, and needs no administrator rights. Running it again
 upgrades an existing install in place.
 
-Prefer a portable copy? Download `aurora.exe` and run it from any folder.
+Prefer a portable copy? Download `chrust.exe` and run it from any folder.
 
 Newer versions can also be installed from inside the browser: **Menu > Check for
-updates** or **Settings > About > Check for updates**. Aurora compares itself with
+updates** or **Settings > About > Check for updates**. Chrust compares itself with
 the newest release here, downloads the executable, and swaps it in when you close
 the browser.
 
@@ -27,7 +27,7 @@ the browser.
 - Bookmarks, history, downloads, find in page, zoom, DevTools, page source.
 - Settings page with themes, search engines, animated new tab backgrounds and
   import of Chrome bookmarks.
-- Aurora's own pages (new tab, settings) share the browser's theme and are
+- Chrust's own pages (new tab, settings) share the browser's theme and are
   updates live: a bookmark edit shows on the open new tab page immediately.
 
 ## Build
@@ -37,7 +37,7 @@ Rust 1.85 or newer, and the MSVC build tools.
 
 ```powershell
 git clone https://github.com/Mateooo93/aurora
-cd aurora
+cd chrust
 cargo build --release
 .\target\release\aurora.exe
 ```
@@ -47,30 +47,30 @@ LTO, one codegen unit) for the fastest runtime.
 
 ### Logo
 
-Aurora draws a built-in mark. To use your own, save a square image as
-`assets/logo.png` and build with `$env:AURORA_LOGO=1` set. Cargo does not notice
-the image changing, so run `cargo clean -p aurora` after replacing it.
+Chrust draws a built-in mark. To use your own, save a square image as
+`assets/chrust/chrust-64.png`. Cargo does not notice the image changing, so
+run `cargo clean -p chrust` after replacing it.
 
 ## Releases
 
-Pushing a tag like `v0.3.1` builds `aurora.exe` and `aurora-setup.exe` on GitHub
+Pushing a tag like `v0.4.1` builds `chrust.exe` and `chrust-setup.exe` on GitHub
 Actions and publishes them as a release (`.github/workflows/release.yml`).
 "Check for updates" reads that release. Bump `version` in `Cargo.toml` with the
 tag so the check recognises the build as newer.
 
 ### Proxy
 
-Set `AURORA_PROXY` before starting Aurora to send everything through a proxy:
+Set `AURORA_PROXY` before starting Chrust to send everything through a proxy:
 the page engine, extension downloads, update checks and site icons.
 
 ```powershell
 $env:AURORA_PROXY = "socks5://127.0.0.1:9150"   # or http://127.0.0.1:8080
-.	argeteleaseurora.exe
+.	argetelease\chrust.exe
 ```
 
-## Where Aurora keeps things
+## Where Chrust keeps things
 
-Everything lives in `%LOCALAPPDATA%\Aurora`: the WebView2 profile (cookies,
+Everything lives in `%LOCALAPPDATA%\Chrust` (kept under the earlier name, so data survives): the WebView2 profile (cookies,
 logins, site data), bookmarks, history, downloads, settings, session, cached
 site icons and downloaded updates. Uninstalling leaves that folder alone, so
 your data is still there if you reinstall.

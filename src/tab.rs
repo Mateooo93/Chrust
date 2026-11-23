@@ -168,7 +168,7 @@ pub struct Tab {
 
 /// Chrome Web Store pages send their install button at the browser itself,
 /// which is what makes "Add to Chrome" fail in a shell that is not Chrome.
-/// Aurora's answer is a page that asks it to fetch and install the extension
+/// Chrust's answer is a page that asks it to fetch and install the extension
 /// and then shows whether that worked.
 fn install_redirect(context: &PageContext, target: Option<&str>) -> http::Response<Cow<'static, [u8]>> {
     let id = target.and_then(crate::extensions::extension_id);
@@ -288,7 +288,7 @@ impl Tab {
         let builder = WebViewBuilder::new_with_web_context(context)
             .with_url(url)
             .with_incognito(private)
-            // A proxy set for Aurora covers pages too, not just its own
+            // A proxy set for Chrust covers pages too, not just its own
             // downloads.
             .with_proxy_config_opt(crate::proxy::configured().map(|p| p.for_webview()))
             .with_background_color(background)

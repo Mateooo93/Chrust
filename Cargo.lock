@@ -496,27 +496,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aurora"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "embed-resource",
- "futures",
- "gpui-kit",
- "gpui-webview",
- "lb-wry",
- "log",
- "serde",
- "serde_json",
- "ureq",
- "url",
- "webview2-com",
- "windows-core 0.61.2",
- "zip",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -904,6 +883,27 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "chrust"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "embed-resource",
+ "futures",
+ "gpui-kit",
+ "gpui-webview",
+ "lb-wry",
+ "log",
+ "serde",
+ "serde_json",
+ "ureq",
+ "url",
+ "webview2-com",
+ "windows-core 0.61.2",
+ "zip",
 ]
 
 [[package]]

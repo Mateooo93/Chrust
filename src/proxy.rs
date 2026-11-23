@@ -1,8 +1,8 @@
-//! A proxy for everything Aurora fetches.
+//! A proxy for everything Chrust fetches.
 //!
 //! The environment variable `AURORA_PROXY` points at a SOCKS5 or HTTP proxy
 //! (for example `socks5://127.0.0.1:9150` or `127.0.0.1:9150`). When it is
-//! set, the page engine and Aurora's own downloads (extensions, updates,
+//! set, the page engine and Chrust's own downloads (extensions, updates,
 //! site icons) all go through it; unset, everything connects directly.
 
 use std::sync::OnceLock;
@@ -62,6 +62,14 @@ impl Proxy {
         match self {
             Proxy::Socks5(host, port) => wry::ProxyConfig::Socks5(endpoint(host, port)),
             Proxy::Http(host, port) => wry::ProxyConfig::Http(endpoint(host, port)),
+        }
+    }
+
+    /// For log lines.
+    pub fn label(&self) -> String {
+        match self {
+            Proxy::Socks5(host, port) => format!("socks5://{host}:{port}"),
+            Proxy::Http(host, port) => format!("http://{host}:{port}"),
         }
     }
 

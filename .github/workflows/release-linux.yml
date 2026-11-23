@@ -36,20 +36,20 @@ jobs:
       - name: Package
         run: |
           mkdir -p staging
-          cp target/release/aurora staging/aurora
-          cp assets/aurora-256.png staging/aurora.png
-          cat > staging/aurora.desktop <<'DESKTOP'
+          cp target/release/chrust staging/chrust
+          cp assets/chrust/chrust-256.png staging/chrust.png
+          cat > staging/chrust.desktop <<'DESKTOP'
           [Desktop Entry]
-          Name=Aurora
+          Name=Chrust
           Comment=Web browser
-          Exec=aurora
-          Icon=aurora
+          Exec=chrust
+          Icon=chrust
           Terminal=false
           Categories=Network;WebBrowser;
           DESKTOP
-          chmod +x staging/aurora
-          chmod +x staging/aurora.desktop
-          cd staging && tar -czf ../aurora-linux-x86_64.tar.gz aurora aurora.png aurora.desktop
+          chmod +x staging/chrust
+          chmod +x staging/chrust.desktop
+          cd staging && tar -czf ../chrust-linux-x86_64.tar.gz chrust chrust.png chrust.desktop
 
       - name: Attach to the release
         env:
@@ -57,4 +57,4 @@ jobs:
         run: |
           # The Windows job creates the release; wait briefly for it.
           for i in $(seq 1 60); do gh release view "${{ github.ref_name }}" >/dev/null 2>&1 && break; sleep 10; done
-          gh release upload "${{ github.ref_name }}" aurora-linux-x86_64.tar.gz --clobber
+          gh release upload "${{ github.ref_name }}" chrust-linux-x86_64.tar.gz --clobber

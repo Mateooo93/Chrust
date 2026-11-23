@@ -1,7 +1,7 @@
 //! Site icons for tabs, bookmarks and history.
 //!
 //! Icons come from Google's favicon service (one PNG per site) and are cached
-//! in `%LOCALAPPDATA%\Aurora\Favicons`. Turning off "site icons" in settings
+//! in the local data folder. Turning off "site icons" in settings
 //! stops all requests.
 
 use std::io::Read as _;

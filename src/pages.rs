@@ -154,10 +154,10 @@ dialog h2{{margin:0 0 6px;font-size:20px;font-weight:600}}
 <body>
 <div class="bg" id="bg"><i></i><i></i><i></i></div>
 <main id="main">
-  <div id="priv" class="private" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Private window. Aurora won't keep history, cookies or site data after you close it.</span></div>
+  <div id="priv" class="private" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Private window. Chrust won't keep history, cookies or site data after you close it.</span></div>
   <div id="clock" class="clock" hidden></div>
   <div id="date" class="date" hidden></div>
-  <h1 id="brand" class="brand" hidden><img src="{logo}" alt="" decoding="async">Aurora</h1>
+  <h1 id="brand" class="brand" hidden><img src="{logo}" alt="" decoding="async">Chrust</h1>
   <form id="form" autocomplete="off">
     <div class="search">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -360,7 +360,7 @@ addEventListener("blur", hideMenu);
     )
 }
 
-/// The page Chrome Web Store install buttons land on: it asks Aurora to
+/// The page Chrome Web Store install buttons land on: it asks Chrust to
 /// fetch the extension, then shows the outcome and where to see it.
 pub fn install(lib: &Library, id: &str) -> String {
     let (message, ok) = match crate::extensions::install(id) {
@@ -380,7 +380,7 @@ pub fn install(lib: &Library, id: &str) -> String {
 <html lang="en" style="{vars}">
 <head>
 <meta charset="utf-8">
-<title>Aurora extension install</title>
+<title>Chrust extension install</title>
 <style>{BASE_CSS}
 body{{display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}}
 main{{position:relative;z-index:1;max-width:480px;width:100%;text-align:center}}
@@ -401,7 +401,7 @@ p{{color:var(--muted);margin:0 0 22px;line-height:1.5}}
   <div class="actions">
     <a class="btn primary" id="store">Extension page</a>
     <a class="btn" id="more">More extensions</a>
-    <a class="btn" id="settings">Aurora settings</a>
+    <a class="btn" id="settings">Chrust settings</a>
   </div>
 </main>
 <script>
@@ -409,7 +409,7 @@ const D = {data};
 const mark = document.getElementById("mark");
 mark.textContent = D.ok ? "✓" : "!";
 if (D.ok) mark.classList.add("ok");
-document.getElementById("title").textContent = D.ok ? "Installed in Aurora" : "Not installed";
+document.getElementById("title").textContent = D.ok ? "Installed in Chrust" : "Not installed";
 document.getElementById("detail").textContent = D.result;
 document.getElementById("store").href = D.page;
 document.getElementById("more").href = D.store;
@@ -424,7 +424,7 @@ document.getElementById("settings").href = D.settings;
 
 /// For install requests that carry no extension id.
 pub fn install_nothing() -> String {
-    r#"<!doctype html><meta charset="utf-8"><title>Aurora</title>
+    r#"<!doctype html><meta charset="utf-8"><title>Chrust</title>
 <body style="font-family:Segoe UI,system-ui,sans-serif;padding:40px">
 <h1>Nothing to install</h1>
 <p>This page belongs to an extension install button.
@@ -503,7 +503,7 @@ code{{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px;color:var(
 </head>
 <body>
 <nav>
-  <h1><img src="{logo}" alt="" decoding="async"><span>Aurora settings</span></h1>
+  <h1><img src="{logo}" alt="" decoding="async"><span>Chrust settings</span></h1>
   <a href="#appearance"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 0-4h-.5a1.5 1.5 0 0 1 0-3H16a5 5 0 0 0 5-5c0-3.3-4-6-9-6Z"/><circle cx="7.5" cy="10" r=".7" fill="currentColor"/><circle cx="10" cy="6.8" r=".7" fill="currentColor"/><circle cx="14.5" cy="6.8" r=".7" fill="currentColor"/></svg>Appearance</a>
   <a href="#search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search</a>
   <a href="#browsing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5 5-2Z"/></svg>Browsing</a>
@@ -550,7 +550,7 @@ code{{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px;color:var(
   </section>
 
   <section id="extensions">
-    <h2>Extensions</h2><p class="sub">Extensions from the Chrome Web Store. The store's own install button cannot reach Aurora, so paste a store link here instead.</p>
+    <h2>Extensions</h2><p class="sub">Extensions from the Chrome Web Store. The store's own install button cannot reach Chrust, so paste a store link here instead.</p>
     <div class="card">
       <div class="row"><div class="t"><b>Add an extension</b><small>Paste the link from its Chrome Web Store page, or its 32-letter id.</small></div>
         <input id="ext-input" type="text" placeholder="chromewebstore.google.com/detail/..." spellcheck="false" autocomplete="off" style="max-width:330px;padding:9px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg)">
@@ -574,10 +574,10 @@ code{{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px;color:var(
   <section id="about">
     <h2>About</h2><p class="sub">A fast browser with a native Rust interface.</p>
     <div class="card">
-      <div class="row"><div class="t"><b>Aurora <span id="ver"></span></b><small>Interface built with GPUI · pages rendered by Microsoft Edge WebView2 <span id="ever"></span></small></div>
+      <div class="row"><div class="t"><b>Chrust <span id="ver"></span></b><small>Interface built with GPUI · pages rendered by Microsoft Edge WebView2 <span id="ever"></span></small></div>
         <button class="btn" data-cmd="open_devtools">Open DevTools</button>
         <button class="btn" id="update">Check for updates</button></div>
-      <div class="row"><div class="t"><b>Updates</b><small><span id="updnote">From <span id="ghrepo"></span>. Aurora replaces only its own files, keeps your data, and restarts when done.</span></small></div>
+      <div class="row"><div class="t"><b>Updates</b><small><span id="updnote">From <span id="ghrepo"></span>. Chrust replaces only its own files, keeps your data, and restarts when done.</span></small></div>
         <button class="btn" data-cmd="open_downloads">Show downloads</button></div>
     </div>
   </section>
@@ -590,7 +590,7 @@ const S = D.settings;
 
 if (!S.smooth_animations) document.documentElement.classList.add("still");
 const send = (m) => window.ipc.postMessage(JSON.stringify(Object.assign({{ kind: "aurora" }}, m)));
-// Aurora keeps the settings in its own process; this page only renders them.
+// Chrust keeps the settings in its own process; this page only renders them.
 // Every command below is followed by `reload`, which reopens this page so the
 // new values arrive (see `serve` in tab.rs) with the position kept. Changes
 // are also mirrored in localStorage, which the open new tab page listens to.
@@ -664,7 +664,7 @@ const toggle = (parent, key, title, desc) => {{
 }};
 toggle("appearance-toggles", "show_clock", "Clock on the new tab page", "Shows the time and a greeting above the search box.");
 toggle("appearance-toggles", "smooth_animations", "Animations", "Animated backgrounds, tab transitions and the sliding sidebar.");
-toggle("browsing-toggles", "restore_session", "Continue where you left off", "Reopen your tabs and windows when Aurora starts.");
+toggle("browsing-toggles", "restore_session", "Continue where you left off", "Reopen your tabs and windows when Chrust starts.");
 toggle("browsing-toggles", "show_bookmarks_bar", "Show the bookmarks bar", "Also with Ctrl+Shift+B.");
 toggle("browsing-toggles", "site_icons", "Site icons", "Loads small site logos from Google's favicon service for tabs and bookmarks.");
 toggle("browsing-toggles", "show_dev_tools_button", "Developer tools button", "Shows a DevTools button in the toolbar. F12 always works.");
@@ -704,7 +704,7 @@ if (D.canInstall) {{
 
 $("histcount").textContent = D.counts.history + " pages visited.";
 
-// Extensions: every folder Aurora has unpacked, with a remove button.
+// Extensions: every folder Chrust has unpacked, with a remove button.
 const extList = $("ext-list");
 const renderExtensions = () => {{
   extList.replaceChildren();

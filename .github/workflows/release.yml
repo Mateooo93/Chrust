@@ -1,10 +1,10 @@
 name: Release
 
 # Pushing a tag like v0.2.0 builds Aurora and publishes two files:
-#   aurora.exe        the browser itself; "Check for updates" installs this
-#   aurora-setup.exe  per-user installer (Start menu and Apps and Features)
+#   chrust.exe        the browser itself; "Check for updates" installs this
+#   chrust-setup.exe  per-user installer (Start menu and Apps and Features)
 #
-# The setup exe is tools/installer/aurora-installer.ps1 compiled with ps2exe,
+# The setup exe is tools/installer/chrust-installer.ps1 compiled with ps2exe,
 # plus a zip holding the browser and its icon appended after the exe's own
 # bytes. The script opens that zip from inside itself (a zip reader searches
 # the end of the file), so one file carries everything and needs nothing
@@ -36,17 +36,18 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
-          $env:AURORA_VERSION = $version
           New-Item -ItemType Directory -Force -Path staging | Out-Null
-          Copy-Item target/release/aurora.exe aurora.exe
-          Copy-Item target/release/aurora.exe staging/aurora.exe
-          Copy-Item assets/aurora.ico staging/aurora.ico
+          Copy-Item target/release/chrust.exe chrust.exe
+          Copy-Item target/release/chrust.exe staging/chrust.exe
+          Copy-Item assets/chrust/chrust.ico staging/chrust.ico
           Install-Module ps2exe -Scope CurrentUser -Force -AllowClobber
           Import-Module ps2exe
-          Invoke-ps2exe -inputFile tools/installer/aurora-installer.ps1 -outputFile aurora-setup.exe -noConsole -iconFile assets/aurora.ico
-          Compress-Archive -Path staging/aurora.exe,staging/aurora.ico -DestinationPath staging/payload.zip
+          (Get-Content tools/installer/chrust-installer.ps1 -Raw).Replace("$version = '0.0.0'", "$version = '$version'") |
+            Set-Content staging/installer.ps1 -Encoding UTF8
+          Invoke-ps2exe -inputFile staging/installer.ps1 -outputFile chrust-setup.exe -noConsole -iconFile assets/chrust/chrust.ico
+          Compress-Archive -Path staging/chrust.exe,staging/chrust.ico -DestinationPath staging/payload.zip
           $bytes = [System.IO.File]::ReadAllBytes("$PWD/staging/payload.zip")
-          $stream = [System.IO.File]::Open("$PWD/aurora-setup.exe", [System.IO.FileMode]::Append)
+          $stream = [System.IO.File]::Open("$PWD/chrust-setup.exe", [System.IO.FileMode]::Append)
           $stream.Write($bytes, 0, $bytes.Length)
           $stream.Close()
 
@@ -57,10 +58,10 @@ jobs:
           # payload never reaches a release.
           $dir = Join-Path $env:RUNNER_TEMP 'payload-test'
           New-Item -ItemType Directory -Force $dir | Out-Null
-          Copy-Item aurora-setup.exe $dir/app.exe
-          Copy-Item target/release/aurora.exe -Destination $dir/expected.exe
-          $src = Get-Content tools/installer/aurora-installer.ps1 -Raw
-          $code = [regex]::Match($src, '(?s)function Get-SelfPath.*?(?=function Install-Aurora)').Value
+          Copy-Item chrust-setup.exe $dir/app.exe
+          Copy-Item target/release/chrust.exe -Destination $dir/expected.exe
+          $src = Get-Content staging/installer.ps1 -Raw
+          $code = [regex]::Match($src, '(?s)function Get-SelfPath.*?(?=function Install-Chrust)').Value
           $code = $code.Replace('return $process.MainModule.FileName', 'return $global:SetupPath')
           $global:SetupPath = (Join-Path $dir 'app.exe')
           Invoke-Expression $code
@@ -80,7 +81,7 @@ jobs:
           # A re-run for an existing tag replaces the files instead of failing.
           gh release view "${{ github.ref_name }}" > $null 2>&1
           if ($LASTEXITCODE -eq 0) {
-            gh release upload "${{ github.ref_name }}" aurora.exe aurora-setup.exe --clobber
+            gh release upload "${{ github.ref_name }}" chrust.exe chrust-setup.exe --clobber
           } else {
-            gh release create "${{ github.ref_name }}" aurora.exe aurora-setup.exe --title "Aurora $version" --generate-notes
+            gh release create "${{ github.ref_name }}" chrust.exe chrust-setup.exe --title "Chrust $version" --generate-notes
           }

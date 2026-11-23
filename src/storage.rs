@@ -1,4 +1,4 @@
-//! Files Aurora keeps between runs: under `%LOCALAPPDATA%\Aurora` on
+//! Files Chrust keeps between runs: under `%LOCALAPPDATA%\Aurora` on
 //! Windows, under `$XDG_DATA_HOME/aurora` (usually `~/.local/share/aurora`)
 //! elsewhere.
 
@@ -17,6 +17,8 @@ pub fn data_dir() -> PathBuf {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
             .unwrap_or_else(std::env::temp_dir);
+        // The folder keeps the name earlier versions used, so existing
+        // bookmarks, history and settings carry over to the rebrand.
         return base.join("Aurora");
     }
     #[cfg(not(windows))]
@@ -142,7 +144,7 @@ fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) {
         fs::write(&tmp, &bytes)?;
         if let Err(first) = fs::rename(&tmp, path) {
             // Another process may hold the destination open for a moment
-            // (antivirus scan, another Aurora window). Retry briefly, then
+            // (antivirus scan, another Chrust window). Retry briefly, then
             // write in place rather than lose the data.
             for _ in 0..5 {
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -187,7 +189,7 @@ pub fn save_history(history: &[HistoryEntry]) {
 
 pub fn load_downloads() -> Vec<Download> {
     let mut list: Vec<Download> = read_json(&data_dir().join("downloads.json")).unwrap_or_default();
-    // Anything still "in progress" was interrupted when Aurora last closed.
+    // Anything still "in progress" was interrupted when Chrust last closed.
     for d in &mut list {
         if d.state == DownloadState::InProgress {
             d.state = DownloadState::Failed;

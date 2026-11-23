@@ -24,7 +24,7 @@ pub fn search_engine(id: &str) -> &'static SearchEngine {
 }
 
 pub const BACKGROUNDS: &[(&str, &str)] = &[
-    ("aurora", "Aurora (animated)"),
+    ("aurora", "Chrust (animated)"),
     ("nebula", "Nebula (animated)"),
     ("grid", "Dev grid"),
     ("sunset", "Sunset"),

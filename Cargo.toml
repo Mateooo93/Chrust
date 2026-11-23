@@ -1,11 +1,11 @@
 [package]
-name = "aurora"
-version = "0.3.0"
+name = "chrust"
+version = "0.4.0"
 edition = "2024"
-description = "Aurora: a web browser with a GPUI interface and the WebView2 engine"
+description = "Chrust: a web browser with a GPUI interface and the WebView2 engine"
 
 [[bin]]
-name = "aurora"
+name = "chrust"
 path = "src/main.rs"
 
 [dependencies]

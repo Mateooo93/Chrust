@@ -1,7 +1,7 @@
 //! Extensions from the Chrome Web Store.
 //!
 //! WebView2 runs extensions that sit unpacked in folders, so the store's own
-//! install button cannot drive it. Aurora therefore fetches the package the
+//! install button cannot drive it. Chrust therefore fetches the package the
 //! store serves (a `.crx`: a signed header in front of a zip), unpacks it
 //! into `%LOCALAPPDATA%\Aurora\Extensions\<id>`, and lets WebView2 load every
 //! folder there. Extensions that rely on Chrome-only APIs load but do
@@ -64,18 +64,26 @@ pub fn install(id: &str) -> Result<String, String> {
          &prodversion={}&x=id%3D{id}%26uc",
         browser_version()
     );
+    if let Some(proxy) = crate::proxy::configured() {
+        log::info!("extension {id}: using proxy {}", proxy.label());
+    }
     let response = agent().get(&url).call().map_err(|err| match err {
-        ureq::Error::Status(404, _) => "The Chrome Web Store does not have that extension.".to_string(),
-        ureq::Error::Status(code, _) => format!("The Chrome Web Store answered with error {code}."),
-        ureq::Error::Transport(_) => "Could not reach the Chrome Web Store. Check the connection.".to_string(),
+        ureq::Error::Status(404, _) => "The store does not have that extension.".to_string(),
+        ureq::Error::Status(code, _) => format!("The store answered {code} for {id}."),
+        ureq::Error::Transport(err) => format!("Could not reach the store for {id}: {err}"),
     })?;
     let mut bytes = Vec::new();
     response
         .into_reader()
         .take(200 * 1024 * 1024)
         .read_to_end(&mut bytes)
-        .map_err(|err| format!("The download failed: {err}"))?;
-    let zip = crx_payload(&bytes).ok_or("The download is not a Chrome extension package.")?;
+        .map_err(|err| format!("The download failed ({id}): {err}"))?;
+    let Some(zip) = crx_payload(&bytes) else {
+        return Err(format!(
+            "The store sent {} bytes that are not an extension package ({id}); a proxy or filter page may have replaced it.",
+            bytes.len()
+        ));
+    };
 
     // Unpack into a scratch folder first, so a broken package never damages
     // the copy in use; the swap is a single rename.
@@ -101,7 +109,7 @@ pub fn install(id: &str) -> Result<String, String> {
         // The running engine may hold it; the new copy replaces it on the
         // next start instead.
         let _ = std::fs::remove_dir_all(&scratch);
-        return Err("Close Aurora's other windows and try again.".into());
+        return Err("Close Chrust's other windows and try again.".into());
     }
     if let Err(err) = std::fs::rename(&scratch, &target) {
         let _ = std::fs::rename(&old, &target);
