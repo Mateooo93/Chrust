@@ -1,5 +1,17 @@
 # Changes
 
+## 0.4.3 – instant tabs
+
+- A new tab no longer waits for the page engine: one page is started in the
+  background a few seconds after a window settles (and again after each one
+  is used), so Ctrl+T only has to show it and set the address. Measured on
+  this machine, a new tab used to hold the window for about 200 ms while the
+  engine started; it now appears at once. `CHRUST_NO_PREWARM=1` turns it off,
+  and the spare page costs one hidden document.
+- The spare page is never saved into the session and never shows in the tab
+  strip: an eight-tab restore still comes back as exactly eight tabs, with
+  the same active tab.
+
 ## 0.4.2 – settled
 
 - Fixed: the spinner sometimes kept turning on a page that had been readable

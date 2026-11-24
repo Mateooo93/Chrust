@@ -215,6 +215,12 @@ pub struct Browser {
     immersive: bool,
     /// The tabs to open on the first render; see `restore`.
     pending: Option<(Vec<String>, usize)>,
+    /// A page started ahead of time, waiting to become the next new tab.
+    ///
+    /// Starting a page is the slowest part of opening a tab (the engine has to
+    /// make a controller and a document), so one is made while the user is
+    /// reading something else and handed over when they ask for a new tab.
+    spare: Option<Tab>,
     /// The title the window last showed, so page events that do not change it
     /// do not talk to the platform.
     window_title: String,
@@ -298,6 +304,7 @@ impl Browser {
             page_fullscreen: false,
             immersive: false,
             pending: None,
+            spare: None,
             window_title: String::new(),
             _subscriptions: subscriptions,
         };
@@ -321,6 +328,9 @@ impl Browser {
         }
         perf::mark("session restored");
         self.update_window_title(window);
+        // One page started in the background, once the window has settled, so
+        // the first new tab does not wait for the engine either.
+        self.schedule_spare(window, cx, Duration::from_millis(2500));
     }
 
     // ----- helpers --------------------------------------------------------
@@ -468,6 +478,58 @@ impl Browser {
 
     // ----- tabs -----------------------------------------------------------
 
+    /// Starts a page nobody is looking at yet, so the next new tab appears at
+    /// once instead of waiting for the engine.
+    ///
+    /// It costs one hidden document and the work of starting it, which is why
+    /// it happens a few seconds after the window settles and only one at a
+    /// time. `CHRUST_NO_PREWARM=1` turns it off.
+    fn make_spare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.spare.is_some() || std::env::var_os("CHRUST_NO_PREWARM").is_some() {
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let tab = Tab::new(
+            id,
+            "about:blank",
+            self.private,
+            false,
+            &mut self.web_context,
+            self.lib.clone(),
+            self.events.clone(),
+            window,
+            cx,
+        );
+        match tab {
+            Ok(mut tab) => {
+                tab.webview.update(cx, |w, _| {
+                    let _ = w.raw().focus_parent();
+                    if w.visible() {
+                        w.hide();
+                    }
+                });
+                set_memory_level(&mut tab, false, cx);
+                self.spare = Some(tab);
+                perf::mark("spare page ready");
+                log::debug!("a page is ready for the next tab");
+            }
+            // A spare is an optimisation: a browser that cannot make one still
+            // opens tabs, just the way it did before.
+            Err(err) => log::debug!("no page prepared for the next tab: {err:#}"),
+        }
+    }
+
+    /// Prepares the spare page once the window has settled, and again after one
+    /// has been used, in the background.
+    fn schedule_spare(&mut self, window: &mut Window, cx: &mut Context<Self>, after: Duration) {
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            let _ = this.update_in(cx, |this, window, cx| this.make_spare(window, cx));
+        })
+        .detach();
+    }
+
     fn open_tab(&mut self, url: &str, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
         let index = if self.tabs.is_empty() { 0 } else { (self.active + 1).min(self.tabs.len()) };
         self.open_tab_at(url, index, activate, window, cx);
@@ -483,6 +545,20 @@ impl Browser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A page that was started ahead of time is used as it is: only its
+        // address has to change, which the engine starts in a moment.
+        if let Some(mut tab) = self.spare.take() {
+            tab.set_loading(true);
+            tab.navigation = None;
+            tab.title.clear();
+            tab.url = url.to_string();
+            let _ = tab.raw(cx).load_url(url);
+            log::debug!("new tab used the page that was ready: {url}");
+            self.insert_tab(tab, url, index, activate, window, cx);
+            self.schedule_spare(window, cx, Duration::from_millis(800));
+            return;
+        }
+
         let id = self.next_id;
         self.next_id += 1;
         let tab = Tab::new(
@@ -537,8 +613,20 @@ impl Browser {
         };
 
         perf::mark(format!("tab {id} ready"));
+        self.insert_tab(tab, url, index, activate, window, cx);
+    }
+
+    /// Puts a page into the strip, showing it when it should be shown.
+    fn insert_tab(
+        &mut self,
+        mut tab: Tab,
+        url: &str,
+        index: usize,
+        activate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let index = index.min(self.tabs.len());
-        let mut tab = tab;
         if !activate {
             // Hidden pages must not hold keyboard focus and only need
             // minimal memory until they are shown.
