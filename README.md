@@ -74,7 +74,9 @@ rustc-wrapper = "rustc-wrap"      # hands most crates to sccache
 linker = "lld-link"
 ```
 
-`rustc-wrap` (source in `~/.cargo/rustc-wrap`) exists because Windows cannot
+`rustc-wrap` (source in `tools/rustc-wrap`, installed as
+`~/.cargo/bin/rustc-wrap.exe` with `rustc -O -o ... main.rs`) exists because
+Windows cannot
 give a process a command line longer than 32 KB. The biggest crates,
 `gpui-component` and Chrust itself, need more than that, and neither cargo nor
 sccache copes once a wrapper is in front: sccache expands the argument list
