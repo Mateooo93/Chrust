@@ -23,8 +23,12 @@ use gpui_kit::App;
 use crate::library::Shared;
 
 /// The repository releases are published from.
-pub const REPO: &str = "Mateooo93/aurora";
-const API: &str = "https://api.github.com/repos/Mateooo93/aurora/releases/latest";
+///
+/// This is the current name: the repository was renamed from `aurora` to
+/// `Chrust`, and the API answers the old path with a 301 whose body carries no
+/// release, which the browser used to report as "nothing has been published".
+pub const REPO: &str = "Mateooo93/Chrust";
+const API: &str = "https://api.github.com/repos/Mateooo93/Chrust/releases/latest";
 const SCRIPT_NAME: &str = "chrust-update.cmd";
 /// Seconds the restart script waits between checks for Chrust having closed.
 const POLL_SECONDS: &str = "2";
@@ -92,6 +96,13 @@ fn check() -> (String, Option<PathBuf>) {
         },
         Err(err) => return (format!("Could not read GitHub's answer: {err}"), None),
     };
+    // A renamed repository, a rate limit or an outage answers with a message
+    // and no tag; show that instead of "nothing has been published".
+    if let Some(message) = body["message"].as_str() {
+        if body["tag_name"].as_str().is_none() {
+            return (format!("GitHub answered: {message}"), None);
+        }
+    }
     let is_release = body["draft"].as_bool() != Some(true);
     let version = body["tag_name"].as_str().unwrap_or_default().trim_start_matches('v').to_string();
     let address = body["assets"]

@@ -1,5 +1,18 @@
 # Changes
 
+## 0.4.2 – settled
+
+- Fixed: the spinner sometimes kept turning on a page that had been readable
+  for a while. The load is now finished by the engine's own navigation
+  result, and a load that reports nothing for 30 seconds is written off
+  instead of spinning forever.
+- Fixed: "Check for updates" never found a release. The repository moved
+  from `aurora` to `Chrust`, and the old API path answers with a redirect
+  that carries no release; the check now asks the current name and reports
+  what GitHub says instead of "nothing has been published".
+- The Linux build compiles again: the WebView2 error helpers are Windows-only
+  code and are now kept out of the other platforms' builds.
+
 ## 0.4.1 – quicker
 
 - One page-engine environment for the whole browser: the first page starts it

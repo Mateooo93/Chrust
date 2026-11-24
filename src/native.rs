@@ -140,10 +140,10 @@ mod imp {
 mod imp {
     use super::{NativeEvent, NavigationStatus};
 
-    pub fn can_go_back(webview: &wry::WebView) -> bool {
+    pub fn can_go_back(_webview: &wry::WebView) -> bool {
         true
     }
-    pub fn can_go_forward(webview: &wry::WebView) -> bool {
+    pub fn can_go_forward(_webview: &wry::WebView) -> bool {
         true
     }
     /// Back and forward, then the page reports its new address: on these

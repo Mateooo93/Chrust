@@ -82,6 +82,7 @@ pub fn start() -> Option<PathBuf> {
 }
 
 /// Turns a webview error into something worth putting in a notification.
+#[cfg(windows)]
 pub fn describe(err: &anyhow::Error) -> String {
     if let Some(webview2_com::Error::WindowsError(inner)) =
         err.chain().find_map(|cause| cause.downcast_ref::<webview2_com::Error>())
@@ -91,9 +92,16 @@ pub fn describe(err: &anyhow::Error) -> String {
     err.to_string()
 }
 
+/// WebKit reports plain messages, so there is nothing to unwrap.
+#[cfg(not(windows))]
+pub fn describe(err: &anyhow::Error) -> String {
+    err.to_string()
+}
+
 /// Whether starting the engine can simply be tried again: these codes mean
 /// "the browser process is still coming up" or "a window transition is in
 /// progress", both of which clear within a moment.
+#[cfg(windows)]
 pub fn worth_retrying(err: &anyhow::Error) -> bool {
     use windows::Win32::Foundation::{
         ERROR_INVALID_STATE, RPC_E_CALL_CANCELED, RPC_E_SERVERCALL_RETRYLATER, RPC_E_WRONG_THREAD,
@@ -113,4 +121,11 @@ pub fn worth_retrying(err: &anyhow::Error) -> bool {
             ]
             .contains(&code)
         })
+}
+
+/// The other engines have no "the browser process is still starting" errors:
+/// a page that would not start there will not start on the next attempt either.
+#[cfg(not(windows))]
+pub fn worth_retrying(_: &anyhow::Error) -> bool {
+    false
 }

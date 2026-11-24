@@ -158,6 +158,9 @@ pub struct Tab {
     pub title: String,
     pub url: String,
     pub loading: bool,
+    /// When `loading` was last switched on, so a load whose finishing event
+    /// never arrives cannot leave the spinner turning forever.
+    pub loading_since: Option<std::time::Instant>,
     /// Latest engine navigation result; only valid while `url` matches the
     /// navigation it describes.
     pub navigation: Option<crate::native::NavigationStatus>,
@@ -167,6 +170,27 @@ pub struct Tab {
     /// Whether the page engine currently has this tab at full memory or is
     /// holding it low; switching tabs only tells it when that changes.
     pub memory_active: bool,
+}
+
+impl Tab {
+    /// Turns the loading state on or off, and records when it started.
+    ///
+    /// Logged at debug level because a spinner that does not stop is the kind
+    /// of bug that needs a trace of who set it: `RUST_LOG=debug` shows every
+    /// transition.
+    pub fn set_loading(&mut self, loading: bool) {
+        if self.loading != loading {
+            log::debug!("tab {} loading: {loading}", self.id);
+        }
+        self.loading = loading;
+        self.loading_since = loading.then(std::time::Instant::now);
+    }
+
+    /// Whether the loading state has been on for longer than any page should
+    /// take, which means the event that ends it was lost.
+    pub fn loading_expired(&self, now: std::time::Instant, limit: std::time::Duration) -> bool {
+        self.loading_since.is_some_and(|since| now.duration_since(since) > limit)
+    }
 }
 
 /// Bytes Chrust serves to its own pages, kept in memory.
@@ -465,6 +489,7 @@ impl Tab {
             title: String::new(),
             url: url.to_string(),
             loading: true,
+            loading_since: Some(std::time::Instant::now()),
             navigation: None,
             audible: false,
             muted: false,

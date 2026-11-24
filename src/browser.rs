@@ -107,6 +107,9 @@ pub fn open_window(urls: Vec<String>, active: usize, private: bool, cx: &mut App
 
 const ZOOM_LEVELS: &[f64] = &[0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0];
 const SIDEBAR_W: f32 = 340.;
+/// How long a load may stay marked as running before it is written off. Well
+/// past any real page (a slow one takes seconds), so only a lost event trips it.
+const SLOW_LOAD: Duration = Duration::from_secs(30);
 const PRIVATE_COLOR: u32 = 0xa855f7;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -347,6 +350,23 @@ impl Browser {
     /// saved from a timer that could fire in the middle of a frame.
     fn flush_if_due(&self) {
         self.lib.borrow_mut().flush_if_due(Instant::now());
+    }
+
+    /// Clears a loading state that no event ever ended.
+    ///
+    /// The engine tells us when it starts a load and when it finishes one, but
+    /// the second message is occasionally lost (a redirect chain, a page that
+    /// never reports it, a download taking the document's place). A spinner
+    /// that never stops is worse than an early one, so a load that has been
+    /// "in progress" far longer than any page takes is written off.
+    fn expire_stuck_loading(&mut self) {
+        let now = Instant::now();
+        for tab in &mut self.tabs {
+            if tab.loading_expired(now, SLOW_LOAD) {
+                log::info!("tab {} is still marked loading after {:?}; clearing it", tab.id, SLOW_LOAD);
+                tab.set_loading(false);
+            }
+        }
     }
 
     fn animate(&self) -> bool {
@@ -639,7 +659,7 @@ impl Browser {
     fn load(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         tab.url = url.to_string();
-        tab.loading = true;
+        tab.set_loading(true);
         let raw = tab.webview.read(cx).raw();
         let _ = raw.load_url(url);
         let _ = raw.focus();
@@ -825,7 +845,7 @@ impl Browser {
             }
             Cmd::Reload => {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
-                    tab.loading = true;
+                    tab.set_loading(true);
                     tab.navigation = None;
                 }
                 self.raw(cx, |w| {
@@ -836,7 +856,7 @@ impl Browser {
             Cmd::Stop => {
                 self.raw(cx, native::stop);
                 if let Some(tab) = self.tabs.get_mut(self.active) {
-                    tab.loading = false;
+                    tab.set_loading(false);
                     tab.navigation = None;
                 }
                 cx.notify();
@@ -848,7 +868,7 @@ impl Browser {
                 let moved = self.raw(cx, |w| native::can_go_back(w) && native::go_back(w));
                 if moved == Some(true) {
                     if let Some(tab) = self.tabs.get_mut(self.active) {
-                        tab.loading = true;
+                        tab.set_loading(true);
                         tab.navigation = None;
                     }
                     cx.notify();
@@ -858,7 +878,7 @@ impl Browser {
                 let moved = self.raw(cx, |w| native::can_go_forward(w) && native::go_forward(w));
                 if moved == Some(true) {
                     if let Some(tab) = self.tabs.get_mut(self.active) {
-                        tab.loading = true;
+                        tab.set_loading(true);
                         tab.navigation = None;
                     }
                     cx.notify();
@@ -1002,7 +1022,7 @@ impl Browser {
             }
             PageEvent::LoadStarted(url) => {
                 let tab = &mut self.tabs[index];
-                tab.loading = true;
+                tab.set_loading(true);
                 tab.navigation = None;
                 url_changed = tab.url != url;
                 // A new document: the old document's title no longer applies.
@@ -1014,7 +1034,7 @@ impl Browser {
             }
             PageEvent::LoadFinished(url) => {
                 let tab = &mut self.tabs[index];
-                tab.loading = false;
+                tab.set_loading(false);
                 tab.navigation = None;
                 url_changed = tab.url != url;
                 tab.url = url;
@@ -1028,8 +1048,19 @@ impl Browser {
                 // when another one has started or finished since.
                 let tab = &mut self.tabs[index];
                 tab.navigation = Some(status);
-                if status == NavigationStatus::Failed && tab.loading {
-                    tab.loading = false;
+                // The load-finished event goes missing now and then (a
+                // redirect chain, a page that never fires it, a download that
+                // replaces the document), which used to leave the spinner
+                // turning on a page that had been readable for a while. The
+                // engine's own result ends the load, for the address it
+                // describes.
+                let ended = match status {
+                    NavigationStatus::Success => tab.url == url,
+                    NavigationStatus::Failed => true,
+                };
+                if ended && tab.loading {
+                    log::debug!("navigation {status:?} ended the load for {url}");
+                    tab.set_loading(false);
                 }
                 // Ignore the title the engine synthesised for the failed
                 // page in favour of the address the user was going to.
@@ -1150,7 +1181,7 @@ impl Browser {
                     for t in self.tabs.iter_mut().filter(|t| address::is_new_tab(&t.url)) {
                         // A settings change is not a load progress; do not
                         // flash the spinner while the page rebuilds.
-                        t.loading = false;
+                        t.set_loading(false);
                         // Visited navigation entries keep the old title in
                         // history; this one is a rebuild of the same page.
                         if !self.private {
@@ -2171,6 +2202,7 @@ impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         perf::mark_once("first frame");
         self.flush_if_due();
+        self.expire_stuck_loading();
         if self.pending.is_some() {
             self.restore(window, cx);
         }
