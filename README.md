@@ -45,6 +45,43 @@ cargo build --release
 The first build takes a while: the release profile is optimized heavily (full
 LTO, one codegen unit) for the fastest runtime.
 
+### Measuring start-up
+
+Chrust writes how long start-up took to `chrust.log` (`window built: 120ms`,
+`first frame: 180ms`, `first page ready: 460ms`). To time a build without a
+stopwatch, ask it to measure itself and close:
+
+```powershell
+$env:CHRUST_DATA_DIR = "$env:TEMP\chrust-measure"   # never the profile you use
+$env:CHRUST_SELFTEST = "4000"                       # close after four seconds
+.\target\release\chrust.exe
+Get-Content "$env:TEMP\chrust-measure\chrust.log"
+```
+
+`CHRUST_DATA_DIR` also makes a portable copy: everything Chrust keeps (profile,
+bookmarks, history, settings, session) moves to that folder.
+
+### Faster rebuilds
+
+This machine builds with `rust-lld` and a warm `sccache`, both set up in
+`~/.cargo/config.toml`:
+
+```toml
+[build]
+rustc-wrapper = "rustc-wrap"      # hands most crates to sccache
+
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"
+```
+
+`rustc-wrap` (source in `~/.cargo/rustc-wrap`) exists because Windows cannot
+give a process a command line longer than 32 KB. The biggest crates,
+`gpui-component` and Chrust itself, need more than that, and neither cargo nor
+sccache copes once a wrapper is in front: sccache expands the argument list
+and then fails with `failed to spawn ... (exit code: 0xfffffffe)`. The wrapper
+sends short command lines to sccache and long ones straight to rustc; `sccache
+-s` shows the hit rate.
+
 ### Logo
 
 Chrust draws a built-in mark. To use your own, save a square image as

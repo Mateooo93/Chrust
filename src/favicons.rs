@@ -17,6 +17,28 @@ use crate::storage;
 
 /// Lowercase host of an http(s) URL, limited to characters safe in a file name.
 pub fn host(url: &str) -> Option<String> {
+    // Every tab and every bookmark row asks for its icon on every frame, so the
+    // parse result is remembered per address.
+    HOSTS.with(|hosts| {
+        if let Some(known) = hosts.borrow().get(url) {
+            return known.clone();
+        }
+        let resolved = parse_host(url);
+        let mut hosts = hosts.borrow_mut();
+        if hosts.len() >= 1024 {
+            hosts.clear();
+        }
+        hosts.insert(url.to_string(), resolved.clone());
+        resolved
+    })
+}
+
+thread_local! {
+    static HOSTS: std::cell::RefCell<std::collections::HashMap<String, Option<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn parse_host(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return None;
@@ -70,6 +92,11 @@ fn scan_cache(lib: &Shared) {
     });
 }
 
+/// How long a download may run before another attempt is allowed. Long enough
+/// for a slow site on a bad connection, short enough that a dropped thread does
+/// not leave the icon missing for the session.
+const PENDING_TTL: Duration = Duration::from_secs(20);
+
 /// At most this many favicon downloads run at once; the rest wait their turn
 /// instead of competing for bandwidth and connections.
 const MAX_DOWNLOADS: usize = 4;
@@ -88,31 +115,28 @@ pub fn icon(url: &str, cx: &mut App) -> Option<PathBuf> {
     }
     let host = host(url)?;
     scan_cache(&lib);
-    let mut needs_download = false;
     {
         let mut lib = lib.borrow_mut();
         match lib.icons.get(&host) {
             Some(IconState::Ready(path)) => return Some(path.clone()),
             // A remembered failure is retried after a while, not per render.
             Some(IconState::Missing(since)) if since.elapsed() < library::MISSING_ICON_TTL => return None,
-            Some(IconState::Pending) => {
-                if !downloading() {
-                    // Its download never started or was dropped; retry.
-                    needs_download = true;
-                }
-            }
-            Some(IconState::Missing(_)) | None => needs_download = true,
+            // A download is already on its way; asking again would start a
+            // second one for the same site on the next frame.
+            Some(IconState::Pending(since)) if since.elapsed() < PENDING_TTL => return None,
+            Some(IconState::Missing(_) | IconState::Pending(_)) | None => {}
         }
-        if needs_download {
-            let path = cache_path(&host);
-            if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
-                lib.icons.insert(host, IconState::Ready(path.clone()));
-                return Some(path);
-            }
-            lib.icons.insert(host.clone(), IconState::Pending);
-        } else {
+        // Too many at once: leave it unasked, so the next frame tries again
+        // instead of competing for connections.
+        if downloading() {
             return None;
         }
+        let path = cache_path(&host);
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+            lib.icons.insert(host, IconState::Ready(path.clone()));
+            return Some(path);
+        }
+        lib.icons.insert(host.clone(), IconState::Pending(Instant::now()));
     }
 
     // A plain thread, so slow sites never hold up GPUI's executor threads.

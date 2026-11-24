@@ -5,7 +5,9 @@
 //! that would usually be a menu or popup here takes its own space instead:
 //! the sidebar pushes the page aside and bars push it down.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -28,7 +30,7 @@ use crate::library::{self, Shared};
 use crate::native::NavigationStatus;
 use crate::storage::{self, DownloadState, WindowSession};
 use crate::tab::{PageEvent, Shortcut, Tab, TabId};
-use crate::{address, favicons, import, native, settings};
+use crate::{address, favicons, import, native, perf, settings};
 
 actions!(
     aurora,
@@ -208,10 +210,11 @@ pub struct Browser {
     page_fullscreen: bool,
     /// F11 fullscreen, which hides the browser chrome.
     immersive: bool,
-    /// Flushes coalesced history/session writes while the window is open.
-    flush_handle: Task<()>,
     /// The tabs to open on the first render; see `restore`.
     pending: Option<(Vec<String>, usize)>,
+    /// The title the window last showed, so page events that do not change it
+    /// do not talk to the platform.
+    window_title: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -231,11 +234,27 @@ impl Browser {
         let (events, mut rx) = unbounded::<(TabId, PageEvent)>();
         cx.spawn_in(window, async move |this, cx| {
             while let Some((id, event)) = rx.next().await {
-                if this
-                    .update_in(cx, |this, window, cx| this.on_page_event(id, event, window, cx))
-                    .is_err()
-                {
-                    break;
+                // The window can be busy in a frame, or starting a page, for a
+                // moment; an update fails then. The event is kept and tried
+                // again instead of being dropped — or, worse, ending this loop
+                // and with it every later page event.
+                let pending = Rc::new(RefCell::new(Some(event)));
+                let mut attempts = 0;
+                loop {
+                    let event = pending.clone();
+                    let done = this.update_in(cx, move |this, window, cx| {
+                        if let Some(event) = event.borrow_mut().take() {
+                            this.on_page_event(id, event, window, cx);
+                        }
+                    });
+                    match done {
+                        Ok(()) => break,
+                        Err(_) if attempts < 500 => {
+                            attempts += 1;
+                            cx.background_executor().timer(Duration::from_millis(4)).await;
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
         })
@@ -275,28 +294,12 @@ impl Browser {
             find_count: None,
             page_fullscreen: false,
             immersive: false,
-            flush_handle: Task::ready(()),
             pending: None,
+            window_title: String::new(),
             _subscriptions: subscriptions,
         };
-        // History and session changes are coalesced by the library; this
-        // writes them out shortly after they happen instead of on every event.
-        let flush_lib = this.lib.clone();
-        this.flush_handle = cx.spawn_in(window, async move |_, cx| loop {
-            let wait = match cx.update(|_, _| {
-                let lib = flush_lib.borrow_mut();
-                lib.time_until_flush(Instant::now()).unwrap_or(Duration::from_secs(30))
-            }) {
-                Ok(wait) => wait.max(Duration::from_millis(50)),
-                Err(_) => return,
-            };
-            cx.background_executor().timer(wait).await;
-            if cx.update(|_, _| flush_lib.borrow_mut().flush()).is_err() {
-                return;
-            }
-        });
-
         this.pending = first;
+        perf::mark_once("window built");
         this
     }
 
@@ -307,9 +310,13 @@ impl Browser {
         let Some((urls, active)) = self.pending.take() else { return };
         let urls = if urls.is_empty() { vec![address::NEW_TAB_URL.to_string()] } else { urls };
         let active = active.min(urls.len() - 1);
+        // Each page goes back in its own place. Inserting them after the
+        // active tab (as a new tab does) would shuffle a restored session on
+        // every start.
         for (i, url) in urls.iter().enumerate() {
-            self.open_tab(url, i == active, window, cx);
+            self.open_tab_at(url, i, i == active, window, cx);
         }
+        perf::mark("session restored");
         self.update_window_title(window);
     }
 
@@ -335,6 +342,13 @@ impl Browser {
         settings::search_engine(&self.lib.borrow().settings.search_engine).url
     }
 
+    /// Writes history and the session once their coalescing delay has passed.
+    /// Called where those change and while frames are drawn, so nothing is
+    /// saved from a timer that could fire in the middle of a frame.
+    fn flush_if_due(&self) {
+        self.lib.borrow_mut().flush_if_due(Instant::now());
+    }
+
     fn animate(&self) -> bool {
         self.lib.borrow().settings.smooth_animations
     }
@@ -343,29 +357,6 @@ impl Browser {
     fn take_focus_from_page(&self, cx: &App) {
         self.raw(cx, |w| {
             let _ = w.focus_parent();
-        });
-    }
-
-    /// Asks the page engine for the result of the navigation that just
-    /// finished, one frame later: WebView2 reports it after the title, and
-    /// pages that never finish (DNS errors, failed connections) are only
-    /// sent by it and never by the load callbacks.
-    fn poll_navigation(&self, tab: &Tab, cx: &mut Context<Self>) {
-        let webview = tab.webview.downgrade();
-        let id = tab.id;
-        let url = tab.url.clone();
-        let events = self.events.clone();
-        cx.defer(move |cx| {
-            let Some(status) = webview.upgrade().and_then(|w| native::last_navigation(w.read(cx).raw()))
-            else {
-                return;
-            };
-            // A success tells nothing new; a failure is what stops a spinner
-            // the load callbacks never end (DNS errors, refused connections).
-            if status == NavigationStatus::Success {
-                return;
-            }
-            let _ = events.unbounded_send((id, PageEvent::Navigation(id, url, status)));
         });
     }
 
@@ -458,6 +449,20 @@ impl Browser {
     // ----- tabs -----------------------------------------------------------
 
     fn open_tab(&mut self, url: &str, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let index = if self.tabs.is_empty() { 0 } else { (self.active + 1).min(self.tabs.len()) };
+        self.open_tab_at(url, index, activate, window, cx);
+    }
+
+    /// Opens a page at `index` in the tab strip. `open_tab` puts new tabs after
+    /// the active one; restoring a session places each page where it was.
+    fn open_tab_at(
+        &mut self,
+        url: &str,
+        index: usize,
+        activate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let id = self.next_id;
         self.next_id += 1;
         let tab = Tab::new(
@@ -475,16 +480,25 @@ impl Browser {
             Ok(tab) => tab,
             Err(err) => {
                 log::error!("could not create a WebView2 page: {err:#}");
+                // If this browser shares one engine environment and a page
+                // would not start with it, it is given up on and the attempt is
+                // made again the old way: one engine per page.
+                if crate::engine::refuse() {
+                    log::warn!("the shared page engine would not start a page; starting each page its own from now on");
+                    self.open_tab_at(url, index, activate, window, cx);
+                    return;
+                }
                 // The engine is busy for a moment while another tab closes
                 // or a window changes, and says so; trying again shortly is
                 // what other engine embedders do.
                 if crate::crashlog::worth_retrying(&err) {
                     log::info!("new tab: engine busy, retrying");
+                    let retry_url = url.to_string();
+                    let retry_at = index;
                     cx.spawn_in(window, async move |this, cx| {
                         cx.background_executor().timer(Duration::from_millis(350)).await;
                         let _ = this.update_in(cx, |this, window, cx| {
-                            let url = address::NEW_TAB_URL.to_string();
-                            this.open_tab(&url, true, window, cx);
+                            this.open_tab_at(&retry_url, retry_at, activate, window, cx);
                         });
                     })
                     .detach();
@@ -502,15 +516,19 @@ impl Browser {
             }
         };
 
-        let index = if self.tabs.is_empty() { 0 } else { (self.active + 1).min(self.tabs.len()) };
+        perf::mark(format!("tab {id} ready"));
+        let index = index.min(self.tabs.len());
+        let mut tab = tab;
         if !activate {
             // Hidden pages must not hold keyboard focus and only need
             // minimal memory until they are shown.
             tab.webview.update(cx, |w, _| {
                 let _ = w.raw().focus_parent();
-                w.hide();
+                if w.visible() {
+                    w.hide();
+                }
             });
-            set_memory_level(&tab, false, cx);
+            set_memory_level(&mut tab, false, cx);
         }
         self.tabs.insert(index, tab);
         if activate {
@@ -522,6 +540,7 @@ impl Browser {
             self.active += 1;
         }
         self.save_session();
+        self.flush_if_due();
         cx.notify();
     }
 
@@ -539,10 +558,16 @@ impl Browser {
             if previous == i {
                 let _ = tab.raw(cx).focus_parent();
             }
-            tab.webview.update(cx, |w, _| w.hide());
+            // Most tabs are already hidden; telling the engine again costs a
+            // call into it on every tab switch.
+            tab.webview.update(cx, |w, _| {
+                if w.visible() {
+                    w.hide();
+                }
+            });
         }
         self.active = index;
-        let tab = &self.tabs[index];
+        let tab = &mut self.tabs[index];
         tab.webview.update(cx, |w, _| w.show());
         set_memory_level(tab, true, cx);
         let url = address::display(&tab.url);
@@ -554,6 +579,7 @@ impl Browser {
         self.find_count = None;
         self.update_window_title(window);
         self.save_session();
+        self.flush_if_due();
         cx.notify();
     }
 
@@ -816,20 +842,27 @@ impl Browser {
                 cx.notify();
             }
             Cmd::Back => {
-                self.raw(cx, native::go_back);
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    tab.loading = true;
-                    tab.navigation = None;
+                // A move between history entries only reports a load when
+                // there is somewhere to go; otherwise the spinner would never
+                // end.
+                let moved = self.raw(cx, |w| native::can_go_back(w) && native::go_back(w));
+                if moved == Some(true) {
+                    if let Some(tab) = self.tabs.get_mut(self.active) {
+                        tab.loading = true;
+                        tab.navigation = None;
+                    }
+                    cx.notify();
                 }
-                cx.notify();
             }
             Cmd::Forward => {
-                self.raw(cx, native::go_forward);
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    tab.loading = true;
-                    tab.navigation = None;
+                let moved = self.raw(cx, |w| native::can_go_forward(w) && native::go_forward(w));
+                if moved == Some(true) {
+                    if let Some(tab) = self.tabs.get_mut(self.active) {
+                        tab.loading = true;
+                        tab.navigation = None;
+                    }
+                    cx.notify();
                 }
-                cx.notify();
             }
             Cmd::Home => {
                 self.load(address::NEW_TAB_URL, window, cx);
@@ -896,12 +929,18 @@ impl Browser {
         }
     }
 
-    fn update_window_title(&self, window: &mut Window) {
+    fn update_window_title(&mut self, window: &mut Window) {
         let name = if self.private { "Chrust Private" } else { "Chrust" };
         let title = match self.active_tab() {
             Some(tab) => format!("{} - {name}", tab.display_title()),
             None => name.into(),
         };
+        // Pages rewrite their titles while they load; only tell the system
+        // when the title it shows would actually change.
+        if self.window_title == title {
+            return;
+        }
+        self.window_title.clone_from(&title);
         window.set_window_title(&title);
     }
 
@@ -945,7 +984,9 @@ impl Browser {
     fn on_page_event(&mut self, id: TabId, event: PageEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(id) else { return };
         let is_active = index == self.active;
-        let old_display = address::display(&self.tabs[index].url);
+        // Only the active tab can move the address bar, and building this for
+        // every event of every tab is wasted work.
+        let old_display = is_active.then(|| address::display(&self.tabs[index].url));
         let mut url_changed = false;
         match event {
             PageEvent::TitleChanged(title) => {
@@ -981,7 +1022,6 @@ impl Browser {
                     let (url, title) = (tab.url.clone(), tab.title.clone());
                     self.lib.borrow_mut().record_visit(&url, &title);
                 }
-                self.poll_navigation(&self.tabs[index], cx);
             }
             PageEvent::Navigation(_id, url, status) => {
                 // The result describes the last navigation only; ignore it
@@ -1065,13 +1105,16 @@ impl Browser {
             // Keep what the user is typing, but follow the page when the
             // address bar still shows the old address (e.g. a search from
             // the new tab page while the bar has focus).
-            let untouched = self.address.read(cx).value().as_ref() == old_display;
+            let untouched = old_display
+                .as_deref()
+                .is_some_and(|old| self.address.read(cx).value().as_ref() == old);
             if url_changed && (!editing || untouched) {
                 let url = address::display(&self.tabs[index].url);
                 self.address.update(cx, |input, cx| input.set_value(url, window, cx));
             }
             self.update_window_title(window);
         }
+        self.flush_if_due();
         cx.notify();
     }
 
@@ -1234,9 +1277,8 @@ impl Browser {
         let tabs: Vec<_> = self
             .tabs
             .iter()
-            .map(|t| (t.id, t.display_title(), t.url.clone(), t.loading, t.audible, t.muted))
+            .map(|t| (t.id, t.display_title(), t.loading, t.audible, t.muted, self.site_icon(&t.url, cx)))
             .collect();
-        let icons: Vec<_> = tabs.iter().map(|(_, _, url, ..)| self.site_icon(url, cx)).collect();
         let theme = cx.theme();
         let (active_bg, hover_bg, fg, muted) = (theme.background, theme.secondary, theme.foreground, theme.muted_foreground);
 
@@ -1268,7 +1310,7 @@ impl Browser {
                         .child("Private"),
                 )
             })
-            .children(tabs.into_iter().zip(icons).enumerate().map(|(i, ((id, title, _, loading, audible, muted_tab), icon))| {
+            .children(tabs.into_iter().enumerate().map(|(i, (id, title, loading, audible, muted_tab, icon))| {
                 let selected = i == self.active;
                 let group: SharedString = format!("tab-{id}").into();
                 let tab = h_flex()
@@ -1291,10 +1333,18 @@ impl Browser {
                     .cursor_pointer()
                     .when(selected, |el| el.bg(active_bg).text_color(fg))
                     .when(!selected, |el| el.text_color(muted).hover(|s| s.bg(hover_bg).text_color(fg)))
-                    .on_click(cx.listener(move |this, _, window, cx| this.activate(i, window, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(index) = this.tab_index(id) {
+                            this.activate(index, window, cx);
+                        }
+                    }))
                     .on_mouse_down(
                         MouseButton::Middle,
-                        cx.listener(move |this, _, window, cx| this.close_tab(i, window, cx)),
+                        cx.listener(move |this, _, window, cx| {
+                            if let Some(index) = this.tab_index(id) {
+                                this.close_tab(index, window, cx);
+                            }
+                        }),
                     )
                     .child(div().flex_none().child(if loading {
                         Icon::new(Icons::LoaderCircle)
@@ -1319,7 +1369,7 @@ impl Browser {
                                 .tooltip(if muted_tab { "Unmute tab" } else { "Mute tab" })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    if let Some(tab) = this.tabs.get_mut(i) {
+                                    if let Some(tab) = this.tab_index(id).and_then(|i| this.tabs.get_mut(i)) {
                                         tab.muted = !tab.muted;
                                         native::set_muted(tab.webview.read(cx).raw(), tab.muted);
                                     }
@@ -1335,7 +1385,9 @@ impl Browser {
                                 .icon(Icons::X)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
-                                    this.close_tab(i, window, cx);
+                                    if let Some(index) = this.tab_index(id) {
+                                        this.close_tab(index, window, cx);
+                                    }
                                 })),
                         ),
                     );
@@ -1946,7 +1998,7 @@ impl Browser {
             .history
             .iter()
             .rev()
-            .filter(|e| query.is_empty() || e.title.to_lowercase().contains(&query) || e.url.to_lowercase().contains(&query))
+            .filter(|e| query.is_empty() || contains_folded(&e.title, &query) || contains_folded(&e.url, &query))
             .take(300)
             .cloned()
             .collect();
@@ -2117,6 +2169,8 @@ macro_rules! bind_actions {
 
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        perf::mark_once("first frame");
+        self.flush_if_due();
         if self.pending.is_some() {
             self.restore(window, cx);
         }
@@ -2216,13 +2270,32 @@ fn empty_state(icon: Icons, text: &'static str, cx: &App) -> impl IntoElement {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max - 1).collect();
-        out.push('…');
-        out
+    // The common case is a short title, and its byte length alone settles it.
+    if s.len() <= max {
+        return s.to_string();
     }
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Whether `haystack` contains `needle`, ignoring ASCII case, without making a
+/// lowercase copy of the haystack: the history list asks this of thousands of
+/// entries on every frame while a search is typed.
+fn contains_folded(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() {
+        let (haystack, needle) = (haystack.as_bytes(), needle_lower.as_bytes());
+        return haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle));
+    }
+    haystack.to_lowercase().contains(needle_lower)
 }
 
 fn host_or_url(url: &str) -> String {
@@ -2252,8 +2325,13 @@ fn is_navigating(tab: &Tab) -> bool {
 }
 
 /// Tells the page engine whether a tab is in use, so hidden pages can give
-/// memory back and shown ones can recompose quickly.
-fn set_memory_level(tab: &Tab, active: bool, cx: &App) {
+/// memory back and shown ones can recompose quickly. The engine is only told
+/// when that actually changes, which is what a tab switch mostly does.
+fn set_memory_level(tab: &mut Tab, active: bool, cx: &App) {
+    if tab.memory_active == active {
+        return;
+    }
+    tab.memory_active = active;
     #[cfg(windows)]
     {
         use wry::WebViewExtWindows as _;
@@ -2278,7 +2356,7 @@ fn open_path(path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ZOOM_LEVELS, ago};
+    use super::{ZOOM_LEVELS, ago, contains_folded, truncate};
 
     #[test]
     fn relative_times() {
@@ -2287,6 +2365,23 @@ mod tests {
         assert_eq!(ago(100_000, 100_000 - 7200), "2 h ago");
         assert_eq!(ago(1_000_000, 1_000_000 - 90_000), "yesterday");
         assert_eq!(ago(1_000_000, 1_000_000 - 3 * 86400), "3 days ago");
+    }
+
+    #[test]
+    fn folded_search() {
+        assert!(contains_folded("Hello World", "hello"));
+        assert!(contains_folded("Hello World", "o w"));
+        assert!(!contains_folded("Hello World", "z"));
+        assert!(contains_folded("anything", ""));
+        assert!(contains_folded("Ärger im Büro", "ärger"));
+        assert!(!contains_folded("abc", "abcd"));
+    }
+
+    #[test]
+    fn shortens_long_titles() {
+        assert_eq!(truncate("short", 10), "short");
+        assert_eq!(truncate("abcdefghij", 5), "abcd…");
+        assert_eq!(truncate("abcdef", 6), "abcdef");
     }
 
     #[test]

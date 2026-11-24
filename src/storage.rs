@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
 use crate::settings::Settings;
 
 pub fn data_dir() -> PathBuf {
+    // A folder of its own, for a portable copy or for the self-test, which
+    // must not touch the profile a real browser window is using.
+    if let Some(dir) = std::env::var_os("CHRUST_DATA_DIR").map(PathBuf::from) {
+        if dir.is_absolute() {
+            return dir;
+        }
+    }
     #[cfg(windows)]
     {
         let base = std::env::var_os("LOCALAPPDATA")

@@ -21,7 +21,9 @@ const DOWNLOADS_LIMIT: usize = 200;
 const FLUSH_DELAY: Duration = Duration::from_millis(750);
 
 pub enum IconState {
-    Pending,
+    /// A download is in flight; when it started, so a dropped one is retried
+    /// instead of being asked for again on every frame.
+    Pending(Instant),
     Ready(PathBuf),
     /// The site has no usable icon. The failure is remembered for a while so
     /// pages that never have one do not re-download on every render.
@@ -55,12 +57,6 @@ pub type Shared = Rc<RefCell<Library>>;
 struct LibraryGlobal(Shared);
 impl Global for LibraryGlobal {}
 
-// Also reachable without an `App`, for background work (favicon downloads
-// and updates, which report back on the UI thread).
-thread_local! {
-    static GLOBAL: std::cell::OnceCell<Shared> = const { std::cell::OnceCell::new() };
-}
-
 pub fn init(cx: &mut App) -> Shared {
     let settings = storage::load_settings();
     let palette = themes::palette(&settings.theme, cx.window_appearance());
@@ -80,25 +76,11 @@ pub fn init(cx: &mut App) -> Shared {
         session_dirty_since: None,
     }));
     cx.set_global(LibraryGlobal(lib.clone()));
-    GLOBAL.with(|global| {
-        let _ = global.set(lib.clone());
-    });
     lib
 }
 
 pub fn get(cx: &App) -> Shared {
     cx.global::<LibraryGlobal>().0.clone()
-}
-
-/// The shared library for code running outside a GPUI context (favicon
-/// downloads). Valid once `init` has run.
-pub fn shared() -> Shared {
-    GLOBAL.with(|global| {
-        global
-            .get()
-            .expect("library is initialised before any background work")
-            .clone()
-    })
 }
 
 /// Re-resolves the theme (for "system", after a Windows light/dark switch)
@@ -125,6 +107,15 @@ impl Library {
             .filter(|(dirty, _)| *dirty)
             .filter_map(|(_, since)| since.map(|since| FLUSH_DELAY.saturating_sub(now.duration_since(since))))
             .min()
+    }
+
+    /// Writes dirty files once their coalescing delay has passed. Called from
+    /// the window thread as frames are drawn, so no timer has to reach into
+    /// the interface to save history.
+    pub fn flush_if_due(&mut self, now: Instant) {
+        if self.time_until_flush(now).is_some_and(|left| left.is_zero()) {
+            self.flush();
+        }
     }
 
     /// Writes every dirty file. Cheap when nothing changed.

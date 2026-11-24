@@ -4,12 +4,14 @@
 mod address;
 mod browser;
 mod crashlog;
+mod engine;
 mod extensions;
 mod favicons;
 mod import;
 mod library;
 mod native;
 mod pages;
+mod perf;
 mod proxy;
 mod settings;
 mod storage;
@@ -18,6 +20,9 @@ mod themes;
 mod update;
 
 fn main() {
+    // First thing, so every later timing is measured from here.
+    perf::start();
+
     // gpui-webview needs this on Windows, or the WebView2 page is never drawn.
     #[cfg(target_os = "windows")]
     // SAFETY: set before any other thread exists.
@@ -29,6 +34,9 @@ fn main() {
     std::panic::set_hook(Box::new(move |info| {
         let where_ = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
         log::error!("panic at {where_}: {info}");
+        // `RUST_BACKTRACE=1` turns the capture into real frames; it is off by
+        // default, so a normal run pays nothing for it.
+        log::error!("backtrace: {}", std::backtrace::Backtrace::capture());
         // Nothing here needs to keep running after a panic, and the log has
         // the details.
         std::process::exit(101);
@@ -48,6 +56,7 @@ fn main() {
         let lib = library::init(cx);
         library::apply_theme(cx);
         log::info!("Chrust {} started, log: {:?}", env!("CARGO_PKG_VERSION"), log_file);
+        perf::mark("interface set up");
 
         let (restore, search) = {
             let lib = lib.borrow();
@@ -65,6 +74,7 @@ fn main() {
                 browser::open_window(w.tabs, w.active, false, cx);
             }
         }
+        perf::mark("windows opened");
 
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {

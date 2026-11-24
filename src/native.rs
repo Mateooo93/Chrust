@@ -16,18 +16,24 @@ pub enum NativeEvent {
     Fullscreen(bool),
     /// The page started or stopped playing sound.
     Audio(bool),
+    /// A top-level navigation finished: the address it ended at, and whether
+    /// it rendered. Failed navigations (DNS errors, refused connections) only
+    /// show up here.
+    Navigation(String, NavigationStatus),
 }
 
 #[cfg(windows)]
 mod imp {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2_8, ICoreWebView2NavigationCompletedEventArgs, ICoreWebView2Settings4,
+        ICoreWebView2, ICoreWebView2_8, ICoreWebView2NavigationCompletedEventArgs,
+        ICoreWebView2Settings4,
     };
     use webview2_com::{
         ContainsFullScreenElementChangedEventHandler, IsDocumentPlayingAudioChangedEventHandler,
         NavigationCompletedEventHandler,
     };
-    use windows_core::{BOOL, Interface as _};
+    use webview2_com::take_pwstr;
+    use windows_core::{BOOL, Interface as _, PWSTR};
     use wry::WebViewExtWindows as _;
 
     use super::{NativeEvent, NavigationStatus};
@@ -45,45 +51,18 @@ mod imp {
         unsafe { webview.webview().CanGoForward(&mut value) }.is_ok() && value.as_bool()
     }
 
-    pub fn go_back(webview: &wry::WebView) {
-        let _ = unsafe { webview.webview().GoBack() };
+    /// Whether the engine accepted the move; it refuses when there is no
+    /// history entry in that direction.
+    pub fn go_back(webview: &wry::WebView) -> bool {
+        unsafe { webview.webview().GoBack() }.is_ok()
     }
 
-    pub fn go_forward(webview: &wry::WebView) {
-        let _ = unsafe { webview.webview().GoForward() };
+    pub fn go_forward(webview: &wry::WebView) -> bool {
+        unsafe { webview.webview().GoForward() }.is_ok()
     }
 
     pub fn stop(webview: &wry::WebView) {
         let _ = unsafe { webview.webview().Stop() };
-    }
-
-    /// Whether the page that just finished loading rendered successfully, so
-    /// DNS errors and failed connections can stop the loading indicator that
-    /// the engine's own load callback never completes for them.
-    pub fn last_navigation(webview: &wry::WebView) -> Option<NavigationStatus> {
-        let storage = std::sync::Arc::new(std::sync::Mutex::new(None::<NavigationStatus>));
-        let handler = NavigationCompletedEventHandler::create(Box::new({
-            let storage = storage.clone();
-            move |_, args: Option<ICoreWebView2NavigationCompletedEventArgs>| {
-                let Some(args) = args else {
-                    return Ok(());
-                };
-                let mut success = BOOL::default();
-                if unsafe { args.IsSuccess(&mut success) }.is_ok() {
-                    if let Ok(mut slot) = storage.lock() {
-                        *slot = Some(if success.as_bool() { NavigationStatus::Success } else { NavigationStatus::Failed });
-                    }
-                }
-                Ok(())
-            }
-        }));
-        let mut token = 0i64;
-        if unsafe { webview.webview().add_NavigationCompleted(&handler, &mut token) }.is_err() {
-            return None;
-        }
-        let status = storage.lock().ok().and_then(|slot| *slot);
-        let _ = unsafe { webview.webview().remove_NavigationCompleted(token) };
-        status
     }
 
     pub fn set_muted(webview: &wry::WebView, muted: bool) {
@@ -117,26 +96,49 @@ mod imp {
         let _ = unsafe { core.add_ContainsFullScreenElementChanged(&handler, &mut token) };
 
         if let Ok(core8) = core.cast::<ICoreWebView2_8>() {
+            let on_audio = send.clone();
             let handler = IsDocumentPlayingAudioChangedEventHandler::create(Box::new(move |sender, _| {
                 if let Some(sender) = sender.and_then(|s| s.cast::<ICoreWebView2_8>().ok()) {
                     let mut value = BOOL::default();
                     unsafe { sender.IsDocumentPlayingAudio(&mut value)? };
-                    send(NativeEvent::Audio(value.as_bool()));
+                    on_audio(NativeEvent::Audio(value.as_bool()));
                 }
                 Ok(())
             }));
             let _ = unsafe { core8.add_IsDocumentPlayingAudioChanged(&handler, &mut token) };
         }
+
+        // Registered for the life of the page. wry's load callback says a load
+        // finished either way; only this says whether the page actually
+        // rendered, which is what ends the spinner on a DNS error or a
+        // refused connection.
+        let on_navigation = send;
+        let handler = NavigationCompletedEventHandler::create(Box::new(
+            move |sender: Option<ICoreWebView2>, args: Option<ICoreWebView2NavigationCompletedEventArgs>| {
+                let (Some(sender), Some(args)) = (sender, args) else {
+                    return Ok(());
+                };
+                let mut success = BOOL::default();
+                let status = match unsafe { args.IsSuccess(&mut success) } {
+                    Ok(()) if success.as_bool() => NavigationStatus::Success,
+                    _ => NavigationStatus::Failed,
+                };
+                let mut address = PWSTR::null();
+                let url = match unsafe { sender.Source(&mut address) } {
+                    Ok(()) => take_pwstr(address),
+                    Err(_) => String::new(),
+                };
+                on_navigation(NativeEvent::Navigation(url, status));
+                Ok(())
+            },
+        ));
+        let _ = unsafe { core.add_NavigationCompleted(&handler, &mut token) };
     }
 }
 
 #[cfg(not(windows))]
 mod imp {
     use super::{NativeEvent, NavigationStatus};
-
-    pub fn last_navigation(_: &wry::WebView) -> Option<NavigationStatus> {
-        None
-    }
 
     pub fn can_go_back(webview: &wry::WebView) -> bool {
         true
@@ -147,13 +149,15 @@ mod imp {
     /// Back and forward, then the page reports its new address: on these
     /// engines wry reports load progress for the document only, and a move
     /// between history entries may not load one.
-    pub fn go_back(webview: &wry::WebView) {
-        let _ = webview.evaluate_script("history.back()");
+    pub fn go_back(webview: &wry::WebView) -> bool {
+        let moved = webview.evaluate_script("history.back()").is_ok();
         report_url(webview);
+        moved
     }
-    pub fn go_forward(webview: &wry::WebView) {
-        let _ = webview.evaluate_script("history.forward()");
+    pub fn go_forward(webview: &wry::WebView) -> bool {
+        let moved = webview.evaluate_script("history.forward()").is_ok();
         report_url(webview);
+        moved
     }
 
     #[cfg(target_os = "linux")]

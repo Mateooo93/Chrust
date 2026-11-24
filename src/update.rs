@@ -45,17 +45,23 @@ pub const CAN_INSTALL: bool = cfg!(windows);
 
 /// Asks GitHub for the newest release. Waiting on the network happens on its
 /// own thread; the outcome reaches the UI through `cx.spawn`.
+///
+/// The worker cannot touch the shared library (it lives on the UI thread), so
+/// it only reports what it downloaded; the download is recorded here.
 pub fn check_and_install(lib: Shared, cx: &mut App) {
     let (tx, rx) = futures::channel::oneshot::channel();
     std::thread::spawn(move || {
         let _ = tx.send(check());
     });
     cx.spawn(async move |cx| {
-        let result = rx.await.ok();
+        let (text, downloaded) = rx.await.ok().unwrap_or_else(|| ("The update check did not finish.".into(), None));
         let _ = cx.update(|app| {
-            let text = result.unwrap_or_else(|| "The update check did not finish.".into());
             {
                 let mut lib = lib.borrow_mut();
+                if let Some(path) = downloaded {
+                    lib.download_started(path.clone());
+                    lib.download_finished(Some(path), true);
+                }
                 lib.update_message = Some(text);
                 lib.flush();
             }
@@ -72,18 +78,19 @@ fn request() -> ureq::Request {
         .set("User-Agent", concat!("Chrust/", env!("CARGO_PKG_VERSION")))
 }
 
-/// The whole update check and download; returns the text to show.
-fn check() -> String {
+/// The whole update check and download; returns the text to show and the file
+/// it downloaded, if any.
+fn check() -> (String, Option<PathBuf>) {
     let response = match request().call() {
         Ok(response) => response,
-        Err(err) => return status_text(err),
+        Err(err) => return (status_text(err), None),
     };
     let body: serde_json::Value = match response.into_string() {
         Ok(text) => match serde_json::from_str(&text) {
             Ok(body) => body,
-            Err(err) => return format!("Could not read GitHub's answer: {err}"),
+            Err(err) => return (format!("Could not read GitHub's answer: {err}"), None),
         },
-        Err(err) => return format!("Could not read GitHub's answer: {err}"),
+        Err(err) => return (format!("Could not read GitHub's answer: {err}"), None),
     };
     let is_release = body["draft"].as_bool() != Some(true);
     let version = body["tag_name"].as_str().unwrap_or_default().trim_start_matches('v').to_string();
@@ -100,14 +107,23 @@ fn check() -> String {
         });
     let (address, current) = match (is_release, version.is_empty(), address) {
         (true, false, Some(address)) => (address, env!("CARGO_PKG_VERSION")),
-        _ => return no_release(),
+        _ => return (no_release(), None),
     };
     if !is_newer(&version, current) {
-        return format!("Chrust {current} is up to date. GitHub's newest release is {version}.");
+        return (
+            format!("Chrust {current} is up to date. GitHub's newest release is {version}."),
+            None,
+        );
     }
     match install(&version, &address) {
-        Ok(()) => format!("Chrust {version} downloaded. It replaces this copy and starts again when you close Chrust."),
-        Err(err) => format!("Chrust {version} is available, but the update could not be prepared: {err}"),
+        Ok(downloaded) => (
+            format!("Chrust {version} downloaded. It replaces this copy and starts again when you close Chrust."),
+            downloaded,
+        ),
+        Err(err) => (
+            format!("Chrust {version} is available, but the update could not be prepared: {err}"),
+            None,
+        ),
     }
 }
 
@@ -151,7 +167,7 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 /// install and the shortcuts stay valid. A portable copy is updated the same
 /// way, in its own folder. The `aurora-setup.exe` installer is never picked
 /// automatically: replacing an installer would leave the old install behind.
-fn install(version: &str, address: &str) -> Result<(), String> {
+fn install(version: &str, address: &str) -> Result<Option<PathBuf>, String> {
     #[cfg(not(windows))]
     {
         let _ = (version, address);
@@ -173,15 +189,6 @@ fn install(version: &str, address: &str) -> Result<(), String> {
             return Err("the downloaded file looks incomplete".into());
         }
 
-        // Listed in the downloads panel like any other file.
-        {
-            let lib = crate::library::shared();
-            let mut lib = lib.borrow_mut();
-            lib.download_started(downloaded.clone());
-            lib.download_finished(Some(downloaded.clone()), true);
-            lib.flush();
-        }
-
         // The setup exe unpacks beside itself when run, so later updates look
         // for the new version next to this executable.
         let exe = std::env::current_exe().map_err(|e| format!("could not find Chrust's own file: {e}"))?;
@@ -197,7 +204,9 @@ fn install(version: &str, address: &str) -> Result<(), String> {
             ));
         }
         spawn_script(&script);
-        Ok(())
+        // Listed in the downloads panel by the caller, which is on the UI
+        // thread; the library is thread-local and cannot be reached from here.
+        Ok(Some(downloaded))
     }
 }
 

@@ -164,6 +164,59 @@ pub struct Tab {
     pub audible: bool,
     pub muted: bool,
     pub zoom: f64,
+    /// Whether the page engine currently has this tab at full memory or is
+    /// holding it low; switching tabs only tells it when that changes.
+    pub memory_active: bool,
+}
+
+/// Bytes Chrust serves to its own pages, kept in memory.
+///
+/// They used to be read from disk inside the page request, which runs on the
+/// thread that draws the window: a custom background can be many megabytes, so
+/// every new tab waited on the disk for it. A file is re-read only when its
+/// length or time on disk changes.
+mod cache {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    /// Beyond this many files the cache starts again; it only ever holds the
+    /// background and a handful of site icons.
+    const MAX_FILES: usize = 512;
+
+    struct Cached {
+        len: u64,
+        modified: Option<std::time::SystemTime>,
+        bytes: &'static [u8],
+    }
+
+    /// Identifies the version of a file: its length and modification time.
+    fn version(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.len(), meta.modified().ok()))
+    }
+
+    /// The whole file, cached for the life of the process. The bytes are
+    /// leaked so a response can point at them without copying; a file that
+    /// changes leaves one old copy behind, which only happens when a new
+    /// background is uploaded.
+    pub fn file(path: &Path) -> Option<&'static [u8]> {
+        static FILES: OnceLock<Mutex<HashMap<PathBuf, Cached>>> = OnceLock::new();
+        let cache = FILES.get_or_init(|| Mutex::new(HashMap::new()));
+        let (len, modified) = version(path)?;
+        let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = cache.get(path) {
+            if cached.len == len && cached.modified == modified {
+                return Some(cached.bytes);
+            }
+        }
+        let bytes: &'static [u8] = Box::leak(std::fs::read(path).ok()?.into_boxed_slice());
+        if cache.len() >= MAX_FILES {
+            cache.clear();
+        }
+        cache.insert(path.to_path_buf(), Cached { len, modified, bytes });
+        Some(bytes)
+    }
 }
 
 /// Chrome Web Store pages send their install button at the browser itself,
@@ -202,14 +255,17 @@ fn serve(context: &PageContext, request: &http::Request<Vec<u8>>) -> http::Respo
         let target = request.uri().query().and_then(|q| q.split('&').find_map(|p| p.strip_prefix("target=")));
         return install_redirect(context, target);
     }
-    let (status, mime, body): (u16, &str, Vec<u8>) = match (page.as_str(), path) {
+    // Bodies borrow from static memory where they can: a background image or a
+    // site icon is served without being copied, and without touching the disk
+    // once it is cached.
+    let (status, mime, body): (u16, &str, Cow<'static, [u8]>) = match (page.as_str(), path) {
         // The name carries a fingerprint, so pages can cache the image.
         (_, logo_path) if logo_path == browser::LOGO_PATH => {
-            (200, "image/png", browser::LOGO_PNG.to_vec())
+            (200, "image/png", Cow::Borrowed(browser::LOGO_PNG))
         }
-        ("newtab", "/background") => match std::fs::read(storage::background_file()) {
-            Ok(bytes) => (200, image_mime(&bytes), bytes),
-            Err(_) => (404, "text/plain", b"no background".to_vec()),
+        ("newtab", "/background") => match cache::file(&storage::background_file()) {
+            Some(bytes) => (200, image_mime(bytes), Cow::Borrowed(bytes)),
+            None => (404, "text/plain", Cow::Borrowed(&b"no background"[..])),
         },
         // Site icons the browser already cached, so the new tab page does
         // not ask Google again for every tile.
@@ -218,23 +274,27 @@ fn serve(context: &PageContext, request: &http::Request<Vec<u8>>) -> http::Respo
             match host {
                 Some(host) if crate::favicons::safe_host(host) => {
                     let path = storage::favicon_dir().join(format!("{host}.png"));
-                    match std::fs::read(&path) {
-                        Ok(bytes) if !bytes.is_empty() => (200, "image/png", bytes),
-                        _ => (404, "text/plain", b"no icon".to_vec()),
+                    match cache::file(&path) {
+                        Some(bytes) if !bytes.is_empty() => (200, "image/png", Cow::Borrowed(bytes)),
+                        _ => (404, "text/plain", Cow::Borrowed(&b"no icon"[..])),
                     }
                 }
-                _ => (400, "text/plain", b"bad host".to_vec()),
+                _ => (400, "text/plain", Cow::Borrowed(&b"bad host"[..])),
             }
         }
         // Everything the browser reports on the pages: the last update or
         // extension result, shown once.
         ("settings", "/report") | ("newtab", "/report") => {
             let text = lib.borrow_mut().update_message.take().unwrap_or_default();
-            (200, "application/json", serde_json::to_vec(&text).unwrap_or_default())
+            (200, "application/json", Cow::Owned(serde_json::to_vec(&text).unwrap_or_default()))
         }
-        ("newtab", _) => (200, "text/html; charset=utf-8", pages::new_tab(&lib.borrow(), private).into_bytes()),
-        ("settings", _) => (200, "text/html; charset=utf-8", pages::settings(&lib.borrow()).into_bytes()),
-        _ => (404, "text/plain", b"Not found".to_vec()),
+        ("newtab", _) => (
+            200,
+            "text/html; charset=utf-8",
+            Cow::Owned(pages::new_tab(&lib.borrow(), private).into_bytes()),
+        ),
+        ("settings", _) => (200, "text/html; charset=utf-8", Cow::Owned(pages::settings(&lib.borrow()).into_bytes())),
+        _ => (404, "text/plain", Cow::Borrowed(&b"Not found"[..])),
     };
     // The logo only changes with a build, so it can be cached for good (its
     // address carries the version). Everything else reflects live data.
@@ -243,7 +303,7 @@ fn serve(context: &PageContext, request: &http::Request<Vec<u8>>) -> http::Respo
         .status(status)
         .header("Content-Type", mime)
         .header("Cache-Control", cache)
-        .body(Cow::Owned(body))
+        .body(body)
         .expect("static response parts are valid")
 }
 
@@ -362,23 +422,14 @@ impl Tab {
                 move |_url, path, success| send(PageEvent::DownloadFinished { path, success })
             });
         // Extensions are a Windows feature: WebView2 loads every folder in
-        // this path as each view starts. The browser arguments repeat wry's
-        // defaults, plus the extension feature for runtimes that need it
-        // written out.
+        // this path as each view starts.
         #[cfg(windows)]
         let builder = {
             use wry::WebViewBuilderExtWindows as _;
             let folder = extensions::extensions_dir();
-            // The proxy goes in as Chromium's own switch, which is read when
-            // the engine's process starts.
-            let mut args = String::from(
-                "--enable-features=msExtensions,msEdgeExtensions --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
-            );
-            if let Some(proxy) = crate::proxy::configured() {
-                args.push(' ');
-                args.push_str(&proxy.browser_flag());
-            }
-            let mut builder = builder.with_browser_extensions_enabled(true).with_additional_browser_args(args);
+            let mut builder = builder
+                .with_browser_extensions_enabled(true)
+                .with_additional_browser_args(crate::engine::browser_args());
             if std::fs::create_dir_all(&folder).is_ok() {
                 builder = builder.with_extensions_path(folder);
             }
@@ -392,15 +443,21 @@ impl Tab {
         };
         #[cfg(windows)]
         let builder = builder;
+        // Joins the engine process the browser already started, instead of
+        // starting one for this page; see `engine`.
+        let builder = crate::engine::attach(builder);
 
         let webview = WebView::build(builder, window, cx)?;
+        crate::engine::remember(webview.raw());
         native::set_save_passwords(webview.raw(), save_passwords);
         native::watch(webview.raw(), move |event| {
             send(match event {
                 NativeEvent::Fullscreen(on) => PageEvent::Fullscreen(on),
                 NativeEvent::Audio(on) => PageEvent::Audio(on),
+                NativeEvent::Navigation(url, status) => PageEvent::Navigation(id, url, status),
             })
         });
+        crate::perf::mark_once("first page ready");
 
         Ok(Self {
             id,
@@ -412,6 +469,7 @@ impl Tab {
             audible: false,
             muted: false,
             zoom: 1.0,
+            memory_active: focused,
         })
     }
 

@@ -432,6 +432,13 @@ pub fn install_nothing() -> String {
         .to_string()
 }
 
+/// The page engine's version. Finding it asks the loader every time, so it is
+/// looked up once.
+fn engine_version() -> String {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| wry::webview_version().unwrap_or_else(|_| "unknown".into())).clone()
+}
+
 pub fn settings(lib: &Library) -> String {
     let engines: Vec<_> = SEARCH_ENGINES.iter().map(|e| json!({ "id": e.id, "name": e.name })).collect();
     let backgrounds: Vec<_> = BACKGROUNDS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect();
@@ -442,7 +449,7 @@ pub fn settings(lib: &Library) -> String {
         "backgrounds": backgrounds,
         "counts": { "bookmarks": lib.bookmarks.len(), "history": lib.history.len() },
         "version": env!("CARGO_PKG_VERSION"),
-        "engineVersion": wry::webview_version().unwrap_or_else(|_| "unknown".into()),
+        "engineVersion": engine_version(),
         "extensions": crate::extensions::list().into_iter()
             .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
             .collect::<Vec<_>>(),
