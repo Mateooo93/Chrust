@@ -61,6 +61,22 @@ Get-Content "$env:TEMP\chrust-measure\chrust.log"
 `CHRUST_DATA_DIR` also makes a portable copy: everything Chrust keeps (profile,
 bookmarks, history, settings, session) moves to that folder.
 
+### Icons
+
+`assets/chrust/chrust.ico` is the browser's own mark: `assets/chrust/chrust.rc`
+puts it on the executable, and the installer copies it for shortcuts.
+
+`assets/chrome/` holds the icon set taken out of an installed Chrome, for
+comparison and for anything that has to look like Chrome (`chrome.ico`, plus
+16, 32, 48 and 256 px PNGs). It is produced by
+`tools/extract-icons/extract_icons.py`, which reads the icon groups straight
+out of a PE file, so it still works after Chrome updates:
+
+```powershell
+python tools/extract-icons/extract_icons.py `
+  "C:\Program Files\Google\Chrome\Application\chrome.exe" assets/chrome
+```
+
 ### Faster rebuilds
 
 This machine builds with `rust-lld` and a warm `sccache`, both set up in
