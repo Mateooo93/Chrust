@@ -66,15 +66,20 @@ bookmarks, history, settings, session) moves to that folder.
 `assets/chrust/chrust.ico` is the browser's own mark: `assets/chrust/chrust.rc`
 puts it on the executable, and the installer copies it for shortcuts.
 
-`assets/chrome/` holds the icon set taken out of an installed Chrome, for
-comparison and for anything that has to look like Chrome (`chrome.ico`, plus
-16, 32, 48 and 256 px PNGs). It is produced by
+`assets/chrome/` holds the icon set taken out of an installed Chrome
+(`chrome.ico`, plus 16, 32, 48 and 256 px PNGs), and the same mark recoloured
+into the Aurora palette: `chrome-chrust.ico` is the default (violet top,
+teal lower left, sky blue lower right, night-dark centre), and
+`chrome-chrust-light.ico` keeps an off-white centre instead. Both carry 16,
+32, 48, 64, 128 and 256 px. They are produced by
 `tools/extract-icons/extract_icons.py`, which reads the icon groups straight
 out of a PE file, so it still works after Chrome updates:
 
 ```powershell
 python tools/extract-icons/extract_icons.py `
   "C:\Program Files\Google\Chrome\Application\chrome.exe" assets/chrome
+python tools/extract-icons/recolour_logo.py `
+  assets/chrome/chrome-256.png assets/chrome aurora-dark
 ```
 
 ### Faster rebuilds
