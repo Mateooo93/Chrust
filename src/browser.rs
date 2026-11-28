@@ -1037,6 +1037,24 @@ impl Browser {
         }
     }
 
+    /// Starts a fresh Chrust once this one has closed, for settings that only
+    /// the next process can apply (the VPN, see `proxy`). The session is
+    /// written first so the new window reopens the same tabs, and the old
+    /// process is gone before the new one opens the profile.
+    fn restart(&mut self, cx: &mut Context<Self>) {
+        self.save_session();
+        let lib = self.lib.clone();
+        lib.borrow_mut().flush();
+        cx.on_app_quit(|_, _: &mut Context<Self>| {
+            if let Err(err) = spawn_after_exit() {
+                log::error!("could not restart Chrust: {err}");
+            }
+            async {}
+        })
+        .detach();
+        cx.quit();
+    }
+
     fn update_window_title(&mut self, window: &mut Window) {
         let name = if self.private { "ChrustPort Private" } else { "ChrustPort" };
         let title = match self.active_tab() {
@@ -1342,6 +1360,10 @@ impl Browser {
                 self.run(Cmd::CheckForUpdates, window, cx);
                 self.notify_page(tab, "Checking GitHub for updates…", cx);
             }
+            // Network settings are read once at start-up, so a VPN change
+            // takes effect in the next process. The session is saved first so
+            // the next window reopens these tabs.
+            "restart" => self.restart(cx),
             "remove_bookmark" => {
                 if let Some(url) = msg["url"].as_str() {
                     self.lib.borrow_mut().remove_bookmark(url);
@@ -2477,6 +2499,40 @@ fn open_path(path: &Path) {
     let _ = std::process::Command::new("explorer").arg(path).spawn();
     #[cfg(not(windows))]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+}
+
+/// Starts another Chrust once this process has ended, for the restart button
+/// in Settings. The window cannot simply re-run itself: the profile and the
+/// engine process belong to the old instance until it exits, so a tiny
+/// detached `cmd.exe` waits for this program to go, then starts it again
+/// with the same working folder.
+#[cfg(windows)]
+fn spawn_after_exit() -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    let exe = std::env::current_exe()?;
+    let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+    // `ping` is the wait; `start` hands the new copy to the shell, so this
+    // command (and its console) can go away. A debug build gets its own
+    // minimized console for its log output.
+    let flags = if cfg!(debug_assertions) { "/min" } else { "" };
+    let command = format!("ping -n 3 127.0.0.1 >nul & start \"\" {flags} \"{}\"", exe.display());
+    std::process::Command::new("cmd.exe")
+        .arg("/c")
+        .arg(command)
+        .current_dir(dir)
+        .creation_flags(0x00000008) // DETACHED_PROCESS
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(not(windows))]
+fn spawn_after_exit() -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("sleep 1; exec \"{}\" >/dev/null 2>&1 &", exe.display()))
+        .spawn()
+        .map(|_| ())
 }
 
 #[cfg(test)]

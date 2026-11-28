@@ -452,6 +452,16 @@ pub fn settings(lib: &Library) -> String {
         // guards a page rather than a number kept by hand in the HTML.
         "adblockRules": crate::adblock::built_in_rules(),
         "adblockReady": crate::adblock::stats().ready,
+        // The VPN the engine actually starts with, and the password manager's
+        // setting; the page shows both rather than guessing from `settings`.
+        "vpn": {
+            "active": crate::proxy::active_label(),
+            "override": crate::proxy::env_override(),
+            "usable": crate::proxy::is_usable_address(&lib.settings.proxy),
+        },
+        "vpnPresets": crate::proxy::PRESETS.iter()
+            .map(|(name, address)| serde_json::json!({ "name": name, "address": address }))
+            .collect::<Vec<_>>(),
         "version": env!("CARGO_PKG_VERSION"),
         "engineVersion": engine_version(),
         "extensions": crate::extensions::list().into_iter()
@@ -557,6 +567,18 @@ code{{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px;color:var(
     <div class="card" style="margin-top:14px">
       <div class="row"><div class="t"><b>Browsing history</b><small id="histcount"></small></div><button class="btn danger" data-cmd="clear_history" data-confirm="Delete all browsing history?">Clear history</button></div>
       <div class="row"><div class="t"><b>Cookies, cache and site data</b><small>Signs you out of every site.</small></div><button class="btn danger" data-cmd="clear_data" data-confirm="Delete all cookies, cache and site data? You will be signed out everywhere.">Clear browsing data</button></div>
+    </div>
+    <div class="card" style="margin-top:14px" id="vpn-card">
+      <div class="row"><div class="t"><b>VPN</b><small>Send every page and every download through a VPN or proxy. Chrust cannot pick a VPN server for you: point it at the one your VPN app opens on this PC, or at a server that speaks SOCKS5 or HTTP.</small></div></div>
+      <div class="row">
+        <select id="vpn-preset" class="btn" aria-label="Common VPN apps">
+          <option value="">Common VPN apps…</option>
+        </select>
+        <input id="vpn-input" type="text" spellcheck="false" autocomplete="off" placeholder="socks5://127.0.0.1:9150" style="font-family:'Cascadia Code',Consolas,monospace">
+        <button class="btn primary" id="vpn-connect">Use VPN</button>
+        <button class="btn" id="vpn-off">Turn off</button>
+      </div>
+      <div class="row"><div class="t"><small id="vpn-state"></small></div><button class="btn" id="vpn-restart" hidden>Restart Chrust</button></div>
     </div>
   </section>
 
@@ -669,7 +691,7 @@ $("bgfile").onchange = (e) => {{
 // Toggles
 const toggle = (parent, key, title, desc) => {{
   const row = el("div", "row"); const t = el("div", "t"); t.append(el("b", null, title), el("small", null, desc));
-  const sw = el("label", "switch"); const input = el("input"); input.type = "checkbox"; input.checked = !!S[key];
+  const sw = el("label", "switch"); const input = el("input"); input.type = "checkbox"; input.checked = !!S[key]; input.id = key;
   input.onchange = () => {{ set(key, input.checked); if (key === "smooth_animations") document.documentElement.classList.toggle("still", !input.checked); }};
   sw.append(input, el("i")); row.append(t, sw); $(parent).appendChild(row);
 }};
@@ -682,6 +704,7 @@ toggle("browsing-toggles", "show_dev_tools_button", "Developer tools button", "S
 toggle("privacy-toggles", "save_passwords", "Offer to save passwords", "Uses the Edge password manager built into WebView2, and fills in forms. Applies to new tabs.");
 toggle("privacy-toggles", "adblock", "Block ads and trackers", "Stops matching requests before they load, using Brave's filter engine and the rules built into Chrust. Private windows always block.");
 toggle("privacy-toggles", "adblock_upstream", "Add EasyList and EasyPrivacy", "Downloads the daily ad and tracker lists on top of the built-in rules. Needs a connection; the built-in rules keep working if a download fails.");
+if (!S.save_passwords) document.getElementById("save_passwords").checked = false;
 const adstate = el("div", "row");
 const adtext = el("div", "t");
 adtext.append(el("small", null,
@@ -696,6 +719,41 @@ if (!$("account-row")) {{
   const btn = el("button", "btn", "Sign in"); btn.onclick = () => send({{ cmd: "google_sign_in" }});
   row.append(t, btn); $("privacy-toggles").appendChild(row);
 }}
+
+// VPN: saves the address and asks for a restart. The page engine takes its
+// network settings when it starts, so this page reports what is really in
+// use (`D.vpn.active`) instead of what was just typed.
+const vpnInput = $("vpn-input"), vpnPreset = $("vpn-preset"), vpnState = $("vpn-state"), vpnRestart = $("vpn-restart");
+D.vpnPresets.forEach(p => {{ const o = el("option", null, p.name); o.value = p.address; vpnPreset.appendChild(o); }});
+vpnInput.value = S.proxy || "";
+vpnPreset.onchange = () => {{ if (vpnPreset.value) vpnInput.value = vpnPreset.value; vpnPreset.value = ""; }};
+const vpnShow = (changed) => {{
+  let t;
+  if (D.vpn.override) t = "CHRUST_PROXY is set for this launch, so it is used instead of this address.";
+  else if (D.vpn.active) t = "Connected: pages go through " + D.vpn.active + ".";
+  else if (S.proxy && !D.vpn.usable) t = "This address has no scheme and port, so it is not used. Write it like socks5://127.0.0.1:1080.";
+  else t = "Not connected. Pages connect directly.";
+  if (changed) {{ if (S.proxy) t += " Restart Chrust to connect through " + S.proxy + "."; else t += " Restart Chrust to stop using the VPN."; }}
+  vpnState.textContent = t;
+  vpnRestart.hidden = !changed;
+}};
+const vpnSave = (address) => {{
+  send({{ cmd: "set", key: "proxy", value: address }});
+  if (D.vpn.override) return __chrustportToast("Set CHRUST_PROXY in the environment to change the proxy for this launch.");
+  S.proxy = address; vpnShow(true);
+}};
+$("vpn-connect").onclick = () => {{
+  const v = vpnInput.value.trim();
+  let url;
+  try {{ url = new URL(/^[a-z]+:\/\//i.test(v) ? v : "socks5://" + v); }}
+  catch (_) {{ return __chrustportToast("Type an address like socks5://127.0.0.1:9150"); }}
+  if (!["socks5:", "socks:", "http:", "https:"].includes(url.protocol)) return __chrustportToast("Start with socks5:// or http://");
+  if (!url.hostname || !url.port) return __chrustportToast("Include the port, for example socks5://127.0.0.1:9150");
+  vpnSave(v);
+}};
+$("vpn-off").onclick = () => {{ vpnInput.value = ""; vpnSave(""); }};
+vpnRestart.onclick = () => {{ if (!confirm("Restart Chrust now? Your tabs are reopened.")) return; send({{ cmd: "restart" }}); __chrustportToast("Restarting…"); }};
+vpnShow(false);
 
 // Search engines
 const engines = $("engines");

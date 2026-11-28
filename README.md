@@ -101,10 +101,20 @@ Actions and publishes them as a release (`.github/workflows/release.yml`).
 "Check for updates" reads that release. Bump `version` in `Cargo.toml` with the
 tag so the check recognises the build as newer.
 
-### Proxy
+### Proxy and VPN
 
-Set `CHRUST_PROXY` before starting Chrust to send everything through a proxy:
-the page engine, extension downloads, update checks and site icons.
+Settings › Privacy › **VPN** sends every page and every download through a
+VPN or proxy. Chrust does not run a VPN client of its own, so the address is
+the tunnel one is already listening on: pick your app from the preset list
+(Mullvad, Proton VPN, NordVPN, Surfshark and the rest use
+`socks5://127.0.0.1:1080`, `9050` or `8080`), or type `socks5://host:port` or
+`http://host:port`. Chrust only accepts an address with a scheme and a port,
+so a typo cannot turn into a tunnel to nothing. A change applies on restart,
+which the card offers; your tabs are reopened afterwards.
+
+`CHRUST_PROXY`, set before starting Chrust, overrides the saved address for
+that run. Either way the page engine, extension downloads, update checks and
+site icons all go through it.
 
 ```powershell
 $env:CHRUST_PROXY = "socks5://127.0.0.1:9150"   # or http://127.0.0.1:8080
