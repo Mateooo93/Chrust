@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased – ad blocking and Google accounts
+## 0.5.0 – ad blocking and Google accounts
 
 - ChrustPort can register itself as a browser, so Windows offers it in
   Settings › Apps › Default apps. Windows will not let a program choose
