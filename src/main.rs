@@ -1,5 +1,7 @@
-// No console window behind the browser in release builds.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// No console window behind the browser. This is set in every build, not just
+// release ones: a debug build that opened a console beside the window also
+// died with it when the console was closed. Output goes to `chrust.log`.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod address;
 mod adblock;
