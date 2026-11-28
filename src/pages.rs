@@ -1,4 +1,4 @@
-//! Built-in pages served through the `aurora` custom protocol.
+//! Built-in pages served through the `chrustport` custom protocol.
 //!
 //! Each page gets its data as one JSON blob and builds its DOM with
 //! `textContent`, so titles and URLs from bookmarks never become markup.
@@ -30,10 +30,10 @@ button,input,select{font:inherit;color:inherit}
 ::selection{background:color-mix(in srgb,var(--accent) 35%,transparent)}
 .bg{position:fixed;inset:0;overflow:hidden;z-index:0;background:var(--bg)}
 .bg i{position:absolute;border-radius:50%;filter:blur(90px);opacity:.55}
-.bg-aurora i:nth-child(1){width:55vmax;height:55vmax;left:-12vmax;top:-18vmax;background:var(--accent);animation:drift1 26s ease-in-out infinite alternate}
-.bg-aurora i:nth-child(2){width:45vmax;height:45vmax;right:-14vmax;top:-8vmax;background:var(--accent2);animation:drift2 32s ease-in-out infinite alternate}
-.bg-aurora i:nth-child(3){width:40vmax;height:40vmax;left:25vmax;bottom:-26vmax;background:color-mix(in srgb,var(--accent) 50%,var(--accent2));animation:drift3 38s ease-in-out infinite alternate}
-.bg-aurora::after{content:"";position:absolute;inset:0;background:radial-gradient(transparent 0,var(--bg) 85%);opacity:.55}
+.bg-chrustport i:nth-child(1){width:55vmax;height:55vmax;left:-12vmax;top:-18vmax;background:var(--accent);animation:drift1 26s ease-in-out infinite alternate}
+.bg-chrustport i:nth-child(2){width:45vmax;height:45vmax;right:-14vmax;top:-8vmax;background:var(--accent2);animation:drift2 32s ease-in-out infinite alternate}
+.bg-chrustport i:nth-child(3){width:40vmax;height:40vmax;left:25vmax;bottom:-26vmax;background:color-mix(in srgb,var(--accent) 50%,var(--accent2));animation:drift3 38s ease-in-out infinite alternate}
+.bg-chrustport::after{content:"";position:absolute;inset:0;background:radial-gradient(transparent 0,var(--bg) 85%);opacity:.55}
 .bg-nebula{background:radial-gradient(ellipse at 20% 0%,color-mix(in srgb,var(--accent) 45%,transparent),transparent 60%),
   radial-gradient(ellipse at 90% 80%,color-mix(in srgb,var(--accent2) 40%,transparent),transparent 55%),#07070d}
 .bg-nebula::before{content:"";position:absolute;inset:-50%;background:conic-gradient(from 0deg,transparent,color-mix(in srgb,var(--accent) 18%,transparent),transparent 30%);animation:spin 60s linear infinite}
@@ -71,7 +71,7 @@ pub fn new_tab(lib: &Library, private: bool) -> String {
         .map(|b| json!({ "title": b.title, "url": b.url }))
         .collect();
     let custom_bg = if s.background_url.is_empty() {
-        "http://aurora.newtab/background".to_string()
+        "http://chrustport.newtab/background".to_string()
     } else {
         s.background_url.clone()
     };
@@ -171,7 +171,7 @@ dialog h2{{margin:0 0 6px;font-size:20px;font-weight:600}}
   <div id="tiles" class="tiles"></div>
 </main>
 <div class="corner">
-  <a class="chip" href="http://aurora.settings/#appearance"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 0-4h-.5a1.5 1.5 0 0 1 0-3H16a5 5 0 0 0 5-5c0-3.3-4-6-9-6Z"/><circle cx="7.5" cy="10" r=".7" fill="currentColor"/><circle cx="10" cy="6.8" r=".7" fill="currentColor"/><circle cx="14.5" cy="6.8" r=".7" fill="currentColor"/></svg>Customize</a>
+  <a class="chip" href="http://chrustport.settings/#appearance"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 0-4h-.5a1.5 1.5 0 0 1 0-3H16a5 5 0 0 0 5-5c0-3.3-4-6-9-6Z"/><circle cx="7.5" cy="10" r=".7" fill="currentColor"/><circle cx="10" cy="6.8" r=".7" fill="currentColor"/><circle cx="14.5" cy="6.8" r=".7" fill="currentColor"/></svg>Customize</a>
 </div>
 <div class="context" id="bookmark-menu" role="menu" hidden>
   <button id="edit-bookmark" type="button" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14 5 5 5M4 20l3.5-.7L19 7.8a2 2 0 0 0-2.8-2.8L4.7 16.5 4 20Z"/></svg>Edit bookmark</button>
@@ -194,17 +194,17 @@ const BOOKMARKS = D.bookmarks;
 // The browser rewrites them in this page after an edit made here; the tiles
 // then follow the browser instead of the copy this page was served with.
 const shown = () => BOOKMARKS;
-window.__auroraBookmarks = (list) => {{ BOOKMARKS.splice(0, BOOKMARKS.length, ...(list || [])); renderTiles(); }};
-const send = (m) => window.ipc.postMessage(JSON.stringify(Object.assign({{ kind: "aurora" }}, m)));
+window.__chrustportBookmarks = (list) => {{ BOOKMARKS.splice(0, BOOKMARKS.length, ...(list || [])); renderTiles(); }};
+const send = (m) => window.ipc.postMessage(JSON.stringify(Object.assign({{ kind: "chrustport" }}, m)));
 let toastTimer;
-window.__auroraToast = (msg) => {{
+window.__chrustportToast = (msg) => {{
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
 }};
 // The settings page mirrors every change in localStorage; apply the ones that
 // only touch this page live instead of waiting for the next reload.
 addEventListener("storage", (e) => {{
-  if (!D.mirror || e.key !== "aurora.settings" || !e.newValue) return;
+  if (!D.mirror || e.key !== "chrustport.settings" || !e.newValue) return;
   let next;
   try {{ next = JSON.parse(e.newValue).settings || {{}}; }} catch (_) {{ return; }}
   document.documentElement.classList.toggle("still", !next.smooth_animations);
@@ -322,7 +322,7 @@ $("remove-bookmark").addEventListener("click", () => {{
   // the page (see `mirror_bookmarks`) needs the same array.
   BOOKMARKS.splice(0, BOOKMARKS.length, ...BOOKMARKS.filter((item) => item !== b));
   renderTiles();
-  __auroraToast("Bookmark removed");
+  __chrustportToast("Bookmark removed");
 }});
 $("cancel-edit").addEventListener("click", () => dialog.close());
 dialog.addEventListener("close", () => {{ editingBookmark = null; }});
@@ -333,9 +333,9 @@ $("bookmark-form").addEventListener("submit", (e) => {{
   const input = $("bookmark-url").value.trim();
   let parsed;
   try {{ parsed = new URL(/^[a-z][a-z\d+.-]*:/i.test(input) ? input : "https://" + input); }}
-  catch (_) {{ return __auroraToast("Enter a valid web address."); }}
+  catch (_) {{ return __chrustportToast("Enter a valid web address."); }}
   if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname)
-    return __auroraToast("Bookmarks must be http or https addresses.");
+    return __chrustportToast("Bookmarks must be http or https addresses.");
   const b = editingBookmark;
   const newUrl = parsed.href;
   send({{ cmd: "edit_bookmark", url: b.url, title, new_url: newUrl }});
@@ -343,7 +343,7 @@ $("bookmark-form").addEventListener("submit", (e) => {{
   b.url = newUrl;
   dialog.close();
   renderTiles();
-  __auroraToast("Bookmark updated");
+  __chrustportToast("Bookmark updated");
 }});
 
 document.addEventListener("pointerdown", (e) => {{ if (!menu.hidden && !menu.contains(e.target)) hideMenu(); }});
@@ -448,6 +448,10 @@ pub fn settings(lib: &Library) -> String {
         "engines": engines,
         "backgrounds": backgrounds,
         "counts": { "bookmarks": lib.bookmarks.len(), "history": lib.history.len() },
+        // The rules actually compiled in, so the settings page reports what
+        // guards a page rather than a number kept by hand in the HTML.
+        "adblockRules": crate::adblock::built_in_rules(),
+        "adblockReady": crate::adblock::stats().ready,
         "version": env!("CARGO_PKG_VERSION"),
         "engineVersion": engine_version(),
         "extensions": crate::extensions::list().into_iter()
@@ -596,12 +600,12 @@ const $ = (id) => document.getElementById(id);
 const S = D.settings;
 
 if (!S.smooth_animations) document.documentElement.classList.add("still");
-const send = (m) => window.ipc.postMessage(JSON.stringify(Object.assign({{ kind: "aurora" }}, m)));
+const send = (m) => window.ipc.postMessage(JSON.stringify(Object.assign({{ kind: "chrustport" }}, m)));
 // Chrust keeps the settings in its own process; this page only renders them.
 // Every command below is followed by `reload`, which reopens this page so the
 // new values arrive (see `serve` in tab.rs) with the position kept. Changes
 // are also mirrored in localStorage, which the open new tab page listens to.
-const MIRROR = "aurora.settings";
+const MIRROR = "chrustport.settings";
 const notify = () => {{ try {{ localStorage.setItem(MIRROR, JSON.stringify({{ settings: S, at: Date.now() }})); }} catch (_) {{}} }};
 const CARRY = ["s", "pick"];
 const reload = (extra) => {{
@@ -614,7 +618,7 @@ const reload = (extra) => {{
 }};
 const set = (key, value, extra) => {{ S[key] = value; send({{ cmd: "set", key, value }}); reload(extra); }};
 let toastTimer;
-window.__auroraToast = (msg) => {{
+window.__chrustportToast = (msg) => {{
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
 }};
@@ -622,7 +626,7 @@ const el = (tag, cls, text) => {{ const e = document.createElement(tag); if (cls
 
 // Themes
 const themes = $("themes");
-const systemVars = () => D.palettes.find(p => p.id === (matchMedia("(prefers-color-scheme: dark)").matches ? "aurora" : "light")).vars;
+const systemVars = () => D.palettes.find(p => p.id === (matchMedia("(prefers-color-scheme: dark)").matches ? "chrustport" : "light")).vars;
 const applyVars = (id) => {{ document.documentElement.setAttribute("style", id === "system" ? systemVars() : D.palettes.find(p => p.id === id).vars); }};
 const themeCards = [{{ id: "system", name: "Match Windows", swatch: ["#10131f", "#ffffff", "#8b7bff", "#5b5bf0"], split: true }}, ...D.palettes];
 themeCards.forEach(p => {{
@@ -641,7 +645,7 @@ D.backgrounds.forEach(bgd => {{
   const b = el("button", "pick" + (S.background === bgd.id ? " on" : ""));
   const pv = el("div", "pv");
   const layer = el("div", "bg bg-" + bgd.id); layer.innerHTML = "<i></i><i></i><i></i>";
-  if (bgd.id === "custom") {{ layer.style.backgroundImage = `url("${{(S.background_url || "http://aurora.newtab/background").replace(/"/g, "%22")}}")`; layer.style.background = layer.style.background || ""; }}
+  if (bgd.id === "custom") {{ layer.style.backgroundImage = `url("${{(S.background_url || "http://chrustport.newtab/background").replace(/"/g, "%22")}}")`; layer.style.background = layer.style.background || ""; }}
   pv.appendChild(layer);
   b.append(pv, el("span", "label", bgd.name));
   b.onclick = () => {{ bgs.querySelectorAll(".pick").forEach(x => x.classList.remove("on")); b.classList.add("on"); set("background", bgd.id, {{ pick: bgd.name }}); }};
@@ -651,12 +655,12 @@ const pickCustom = () => {{ bgs.querySelectorAll(".pick").forEach((x, i) => x.cl
 $("bgurl").value = S.background_url || "";
 $("bgurlset").onclick = () => {{
   const v = $("bgurl").value.trim();
-  if (v && !/^https?:\/\//i.test(v)) return __auroraToast("The URL must start with https://");
-  set("background_url", v); set("background", "custom"); pickCustom(); __auroraToast(v ? "Background set" : "Using your uploaded image");
+  if (v && !/^https?:\/\//i.test(v)) return __chrustportToast("The URL must start with https://");
+  set("background_url", v); set("background", "custom"); pickCustom(); __chrustportToast(v ? "Background set" : "Using your uploaded image");
 }};
 $("bgfile").onchange = (e) => {{
   const f = e.target.files[0]; if (!f) return;
-  if (f.size > 15 * 1024 * 1024) return __auroraToast("Please pick an image under 15 MB");
+  if (f.size > 15 * 1024 * 1024) return __chrustportToast("Please pick an image under 15 MB");
   const r = new FileReader();
   r.onload = () => {{ send({{ cmd: "background_image", data: String(r.result).split(",")[1] || "" }}); S.background_url = ""; $("bgurl").value = ""; S.background = "custom"; pickCustom(); }};
   r.readAsDataURL(f);
@@ -676,6 +680,22 @@ toggle("browsing-toggles", "show_bookmarks_bar", "Show the bookmarks bar", "Also
 toggle("browsing-toggles", "site_icons", "Site icons", "Loads small site logos from Google's favicon service for tabs and bookmarks.");
 toggle("browsing-toggles", "show_dev_tools_button", "Developer tools button", "Shows a DevTools button in the toolbar. F12 always works.");
 toggle("privacy-toggles", "save_passwords", "Offer to save passwords", "Uses the Edge password manager built into WebView2, and fills in forms. Applies to new tabs.");
+toggle("privacy-toggles", "adblock", "Block ads and trackers", "Stops matching requests before they load, using Brave's filter engine and the rules built into Chrust. Private windows always block.");
+toggle("privacy-toggles", "adblock_upstream", "Add EasyList and EasyPrivacy", "Downloads the daily ad and tracker lists on top of the built-in rules. Needs a connection; the built-in rules keep working if a download fails.");
+const adstate = el("div", "row");
+const adtext = el("div", "t");
+adtext.append(el("small", null,
+  D.adblockRules.toLocaleString() + " rules built in, including YouTube's in-stream ads. " +
+  (D.adblockReady ? "Engine ready." : "The engine is still starting; the next page will be covered.")));
+adstate.append(adtext);
+$("privacy-toggles").appendChild(adstate);
+if (!$("account-row")) {{
+  const row = el("div", "row"); row.id = "account-row";
+  const t = el("div", "t"); t.append(el("b", null, "Google account"), el("small", null,
+    "Signs in on Google's own page. The session stays in this browser, so every site that offers \"Sign in with Google\" uses it."));
+  const btn = el("button", "btn", "Sign in"); btn.onclick = () => send({{ cmd: "google_sign_in" }});
+  row.append(t, btn); $("privacy-toggles").appendChild(row);
+}}
 
 // Search engines
 const engines = $("engines");
@@ -701,11 +721,11 @@ document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = () => {{
 $("ver").textContent = D.version; $("ever").textContent = D.engineVersion; $("datadir").textContent = D.dataDir;
 $("ghrepo").textContent = "github.com/" + D.releaseRepo;
 if (D.canInstall) {{
-  $("update").onclick = () => {{ __auroraToast("Checking GitHub for updates…"); window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "check_for_updates" }})); }};
+  $("update").onclick = () => {{ __chrustportToast("Checking GitHub for updates…"); window.ipc.postMessage(JSON.stringify({{ kind: "chrustport", cmd: "check_for_updates" }})); }};
 }} else {{
   // Other platforms get the release by hand; the button just opens it.
   $("update").textContent = "Open releases";
-  $("update").onclick = () => window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "open_releases" }}));
+  $("update").onclick = () => window.ipc.postMessage(JSON.stringify({{ kind: "chrustport", cmd: "open_releases" }}));
   $("updnote").textContent = "Get the newest version from the releases page.";
 }}
 
@@ -734,12 +754,12 @@ renderExtensions();
 // Results the browser stored for this page (an update check, an extension
 // install) arrive as JSON instead of being baked into the page, so a page
 // opened long after the action still shows it only once.
-fetch("/report").then((r) => r.json()).then((text) => {{ if (text) __auroraToast(text); }}).catch(() => {{}});
+fetch("/report").then((r) => r.json()).then((text) => {{ if (text) __chrustportToast(text); }}).catch(() => {{}});
 $("ext-add").onclick = () => {{
   const value = $("ext-input").value.trim();
-  if (!value) return __auroraToast("Paste a Chrome Web Store link first");
-  __auroraToast("Installing…");
-  window.ipc.postMessage(JSON.stringify({{ kind: "aurora", cmd: "install_extension", input: value }}));
+  if (!value) return __chrustportToast("Paste a Chrome Web Store link first");
+  __chrustportToast("Installing…");
+  window.ipc.postMessage(JSON.stringify({{ kind: "chrustport", cmd: "install_extension", input: value }}));
 }};
 
 $("bgurl").value = S.background_url || "";

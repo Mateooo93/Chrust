@@ -1,7 +1,7 @@
 //! A log file for things that go wrong, since release builds have no console.
 //!
 //! Everything `log` records and every panic is appended to
-//! `%LOCALAPPDATA%\Aurora\chrust.log`, which keeps its last 2 MB. It is
+//! `%LOCALAPPDATA%\Chrust\chrust.log`, which keeps its last 2 MB. It is
 //! written synchronously: a crash is exactly when buffered output is lost.
 //! Set `RUST_LOG` to widen what is recorded (`RUST_LOG=debug`).
 

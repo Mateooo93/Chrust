@@ -59,6 +59,7 @@ impl Global for LibraryGlobal {}
 
 pub fn init(cx: &mut App) -> Shared {
     let settings = storage::load_settings();
+    crate::adblock::set_enabled(settings.adblock);
     let palette = themes::palette(&settings.theme, cx.window_appearance());
     let lib = Rc::new(RefCell::new(Library {
         settings,

@@ -1,6 +1,6 @@
 //! A proxy for everything Chrust fetches.
 //!
-//! The environment variable `AURORA_PROXY` points at a SOCKS5 or HTTP proxy
+//! The environment variable `CHRUST_PROXY` points at a SOCKS5 or HTTP proxy
 //! (for example `socks5://127.0.0.1:9150` or `127.0.0.1:9150`). When it is
 //! set, the page engine and Chrust's own downloads (extensions, updates,
 //! site icons) all go through it; unset, everything connects directly.
@@ -51,7 +51,7 @@ fn parse(input: &str) -> Option<Proxy> {
 pub fn configured() -> Option<&'static Proxy> {
     static PROXY: OnceLock<Option<Proxy>> = OnceLock::new();
     PROXY
-        .get_or_init(|| std::env::var("AURORA_PROXY").ok().and_then(|value| parse(&value)))
+        .get_or_init(|| std::env::var("CHRUST_PROXY").ok().and_then(|value| parse(&value)))
         .as_ref()
 }
 

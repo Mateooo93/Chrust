@@ -33,7 +33,7 @@ use crate::tab::{PageEvent, Shortcut, Tab, TabId};
 use crate::{address, favicons, import, native, perf, settings};
 
 actions!(
-    aurora,
+    chrustport,
     [
         NewTab, NewWindow, NewPrivateWindow, CloseTab, ReopenClosedTab, NextTab, PrevTab,
         FocusAddress, Reload, GoBack, GoForward, GoHome, ToggleBookmark, OpenDevTools, Find,
@@ -409,7 +409,7 @@ impl Browser {
         let list = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
         let _ = self.tabs[i]
             .raw(cx)
-            .evaluate_script(&format!("window.__auroraBookmarks && window.__auroraBookmarks({list})"));
+            .evaluate_script(&format!("window.__chrustportBookmarks && window.__chrustportBookmarks({list})"));
     }
 
     /// Downloads a Chrome Web Store extension and hands it to the engine.
@@ -467,7 +467,7 @@ impl Browser {
             let msg = serde_json::to_string(message).unwrap_or_default();
             let _ = self.tabs[i]
                 .raw(cx)
-                .evaluate_script(&format!("window.__auroraToast && window.__auroraToast({msg})"));
+                .evaluate_script(&format!("window.__chrustportToast && window.__chrustportToast({msg})"));
         }
     }
 
@@ -1038,7 +1038,7 @@ impl Browser {
     }
 
     fn update_window_title(&mut self, window: &mut Window) {
-        let name = if self.private { "Chrust Private" } else { "Chrust" };
+        let name = if self.private { "ChrustPort Private" } else { "ChrustPort" };
         let title = match self.active_tab() {
             Some(tab) => format!("{} - {name}", tab.display_title()),
             None => name.into(),
@@ -1238,7 +1238,7 @@ impl Browser {
     }
 
     /// Commands from the settings and new tab pages. `tab.rs` only forwards
-    /// these when they come from an `aurora` page.
+    /// these when they come from a `chrustport` page.
     fn on_internal(&mut self, tab: TabId, msg: &Value, window: &mut Window, cx: &mut Context<Self>) {
         match msg["cmd"].as_str().unwrap_or_default() {
             "set" => {
@@ -1256,6 +1256,8 @@ impl Browser {
                 }
                 match key {
                     "theme" => library::apply_theme(cx),
+                    "adblock" => crate::adblock::set_enabled(self.lib.borrow().settings.adblock),
+                    "adblock_upstream" => crate::adblock::reload(self.lib.borrow().settings.adblock_upstream),
                     "save_passwords" => {
                         let on = self.lib.borrow().settings.save_passwords && !self.private;
                         for t in &self.tabs {
@@ -1315,6 +1317,9 @@ impl Browser {
             "import_chrome" => {
                 let text = self.import_chrome(cx);
                 self.notify_page(tab, &text, cx);
+            }
+            "google_sign_in" => {
+                self.open_tab("https://accounts.google.com/", true, window, cx);
             }
             "open_devtools" => self.run(Cmd::DevTools, window, cx),
             "open_downloads" => self.run(Cmd::Panel(Panel::Downloads), window, cx),

@@ -24,7 +24,7 @@ pub fn search_engine(id: &str) -> &'static SearchEngine {
 }
 
 pub const BACKGROUNDS: &[(&str, &str)] = &[
-    ("aurora", "Chrust (animated)"),
+    ("chrustport", "Chrust (animated)"),
     ("nebula", "Nebula (animated)"),
     ("grid", "Dev grid"),
     ("sunset", "Sunset"),
@@ -53,13 +53,18 @@ pub struct Settings {
     pub save_passwords: bool,
     pub show_dev_tools_button: bool,
     pub smooth_animations: bool,
+    /// Stop requests the ad blocker's rules match. Private windows always
+    /// block, whatever this says (see `adblock`).
+    pub adblock: bool,
+    /// Download EasyList and EasyPrivacy and add them to the bundled rules.
+    pub adblock_upstream: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "system".into(),
-            background: "aurora".into(),
+            background: "chrustport".into(),
             background_url: String::new(),
             search_engine: "google".into(),
             show_bookmarks_bar: true,
@@ -69,6 +74,8 @@ impl Default for Settings {
             save_passwords: true,
             show_dev_tools_button: true,
             smooth_animations: true,
+            adblock: true,
+            adblock_upstream: false,
         }
     }
 }
@@ -105,6 +112,8 @@ impl Settings {
             "save_passwords" => flag(value).map(|v| self.save_passwords = v).is_some(),
             "show_dev_tools_button" => flag(value).map(|v| self.show_dev_tools_button = v).is_some(),
             "smooth_animations" => flag(value).map(|v| self.smooth_animations = v).is_some(),
+            "adblock" => flag(value).map(|v| self.adblock = v).is_some(),
+            "adblock_upstream" => flag(value).map(|v| self.adblock_upstream = v).is_some(),
             _ => false,
         }
     }

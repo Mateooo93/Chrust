@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod address;
+mod adblock;
 mod browser;
 mod crashlog;
 mod engine;
@@ -14,6 +15,7 @@ mod pages;
 mod perf;
 mod proxy;
 mod settings;
+mod signin;
 mod storage;
 mod tab;
 mod themes;
@@ -44,6 +46,11 @@ fn main() {
 
     // `chrust <url> [url...]` opens those pages instead of restoring the last session.
     let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
+
+    // Start compiling the ad blocking rules while the window is still being
+    // built, so the first page opened already has an engine to ask. Upstream
+    // lists are fetched in the same background build when the setting is on.
+    adblock::warm(storage::load_settings().adblock_upstream);
 
     #[cfg(target_os = "linux")]
     let app = gpui_kit::platform::linux(gpui_kit::WindowingModes::X11);

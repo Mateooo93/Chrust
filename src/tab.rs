@@ -10,7 +10,7 @@ use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebViewBuilder, http};
 
 use crate::library::Shared;
 use crate::native::{self, NativeEvent};
-use crate::{address, browser, extensions, pages, storage};
+use crate::{address, browser, extensions, pages, signin, storage};
 
 pub type TabId = u64;
 
@@ -113,8 +113,8 @@ impl Shortcut {
 /// cannot spoof the address bar through this channel.
 const PAGE_SCRIPT: &str = r#"
 (() => {
-  if (window.__aurora) return;
-  window.__aurora = true;
+  if (window.__chrustport) return;
+  window.__chrustport = true;
   const send = (m) => { try { window.ipc.postMessage(JSON.stringify(m)); } catch (_) {} };
   const urlChanged = () => send({ kind: "url" });
   for (const name of ["pushState", "replaceState"]) {
@@ -262,10 +262,10 @@ fn install_redirect(context: &PageContext, target: Option<&str>) -> http::Respon
 }
 
 /// Built-in page name from a custom-protocol request URI, which arrives as
-/// `http://aurora.settings/...` or `aurora://settings/...`.
+/// `http://chrustport.settings/...` or `chrustport://settings/...`.
 fn page_of(uri: &http::Uri) -> String {
     let host = uri.host().unwrap_or_default();
-    host.strip_prefix("aurora.").unwrap_or(host).to_string()
+    host.strip_prefix("chrustport.").unwrap_or(host).to_string()
 }
 
 fn serve(context: &PageContext, request: &http::Request<Vec<u8>>) -> http::Response<Cow<'static, [u8]>> {
@@ -380,7 +380,7 @@ impl Tab {
             .with_focused(focused)
             .with_back_forward_navigation_gestures(true)
             .with_initialization_script_for_main_only(PAGE_SCRIPT, true)
-            .with_custom_protocol("aurora".into(), {
+            .with_custom_protocol("chrustport".into(), {
                 let page = page_context(&lib, private);
                 move |_, request| serve(&page, &request)
             })
@@ -406,7 +406,7 @@ impl Tab {
                     // Built-in page commands are only accepted from built-in pages.
                     let from_internal = request.uri().scheme_str() == Some("http")
                         && request.uri().host().is_some_and(|h| {
-                            h.strip_prefix("aurora.").is_some_and(|p| address::INTERNAL_PAGES.contains(&p))
+                            h.strip_prefix("chrustport.").is_some_and(|p| address::INTERNAL_PAGES.contains(&p))
                         });
                     match msg["kind"].as_str() {
                         Some("url") => send(PageEvent::UrlMaybeChanged),
@@ -415,7 +415,7 @@ impl Tab {
                                 send(PageEvent::Shortcut(s));
                             }
                         }
-                        Some("aurora") if from_internal => send(PageEvent::Internal(msg)),
+                        Some("chrustport") if from_internal => send(PageEvent::Internal(msg)),
                         _ => {}
                     }
                 }
@@ -423,10 +423,14 @@ impl Tab {
             .with_new_window_req_handler({
                 let send = send.clone();
                 move |url, features| {
-                    // Popups that ask for a size (sign-in windows, payment
-                    // dialogs) need `window.opener`, so let WebView2 open them
-                    // as real popups. Plain target=_blank links become tabs.
-                    if features.size.is_some() {
+                    // A popup that asks for a size is a window the page means
+                    // to talk back to (Google's sign-in, payment dialogs): it
+                    // needs `window.opener`, so WebView2 opens it itself. A
+                    // plain `target=_blank` link becomes an ordinary tab.
+                    if let Some(size) = features.size {
+                        if signin::is_sign_in_window(&url) {
+                            log::debug!("sign-in popup opened at {}x{}", size.width, size.height);
+                        }
                         NewWindowResponse::Allow
                     } else {
                         send(PageEvent::OpenInNewTab(url));
@@ -474,6 +478,9 @@ impl Tab {
         let webview = WebView::build(builder, window, cx)?;
         crate::engine::remember(webview.raw());
         native::set_save_passwords(webview.raw(), save_passwords);
+        // Ads and trackers are stopped by the engine before they load; a
+        // private page blocks even when the setting is off.
+        native::watch_requests(webview.raw(), private);
         native::watch(webview.raw(), move |event| {
             send(match event {
                 NativeEvent::Fullscreen(on) => PageEvent::Fullscreen(on),
@@ -499,7 +506,7 @@ impl Tab {
     }
 
     pub fn display_title(&self) -> String {
-        if !self.title.trim().is_empty() && !self.title.starts_with("http://aurora.") {
+        if !self.title.trim().is_empty() && !self.title.starts_with("http://chrustport.") {
             self.title.clone()
         } else {
             match address::internal_page(&self.url) {
@@ -530,9 +537,9 @@ mod tests {
 
     #[test]
     fn request_pages() {
-        let uri: http::Uri = "http://aurora.settings/x".parse().unwrap();
+        let uri: http::Uri = "http://chrustport.settings/x".parse().unwrap();
         assert_eq!(page_of(&uri), "settings");
-        let uri: http::Uri = "aurora://newtab/background".parse().unwrap();
+        let uri: http::Uri = "chrustport://newtab/background".parse().unwrap();
         assert_eq!(page_of(&uri), "newtab");
         assert_eq!(image_mime(&[0x89, b'P', b'N', b'G', 0]), "image/png");
     }
