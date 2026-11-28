@@ -110,6 +110,24 @@ const SIDEBAR_W: f32 = 340.;
 /// How long a load may stay marked as running before it is written off. Well
 /// past any real page (a slow one takes seconds), so only a lost event trips it.
 const SLOW_LOAD: Duration = Duration::from_secs(30);
+/// How long a load may stay marked as running before the page itself is asked
+/// whether it finished. Short enough that a spinner does not outlive the page
+/// it describes, long enough not to ask about every quick load.
+const READY_PROBE: Duration = Duration::from_millis(2500);
+/// How long to wait before asking a page whether it finished. `CHRUST_READY_PROBE_MS`
+/// shortens it, which is how the check itself gets tested.
+fn ready_probe() -> Duration {
+    std::env::var("CHRUST_READY_PROBE_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(READY_PROBE)
+}
+
+/// Reports back only when the document really is complete, so a slow page keeps
+/// its spinner and a finished one drops it.
+const READY_PROBE_SCRIPT: &str =
+    "try{if(document.readyState==='complete'){window.ipc.postMessage(JSON.stringify({kind:'ready'}))}}catch(e){}";
 const PRIVATE_COLOR: u32 = 0xa855f7;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -369,14 +387,60 @@ impl Browser {
     /// never reports it, a download taking the document's place). A spinner
     /// that never stops is worse than an early one, so a load that has been
     /// "in progress" far longer than any page takes is written off.
-    fn expire_stuck_loading(&mut self) {
+    fn expire_stuck_loading(&mut self, cx: &App) {
         let now = Instant::now();
         for tab in &mut self.tabs {
+            if !tab.loading {
+                continue;
+            }
             if tab.loading_expired(now, SLOW_LOAD) {
                 log::info!("tab {} is still marked loading after {:?}; clearing it", tab.id, SLOW_LOAD);
                 tab.set_loading(false);
+            } else if !tab.ready_probed && tab.loading_expired(now, READY_PROBE) {
+                // Ask the page instead of guessing: the load-finished message
+                // is the one the engine loses, and the document knows whether
+                // it is finished.
+                tab.ready_probed = true;
+                let _ = tab.raw(cx).evaluate_script(READY_PROBE_SCRIPT);
             }
         }
+    }
+
+    /// Watches a load from the outside, so a lost load-finished message cannot
+    /// leave the spinner turning.
+    ///
+    /// This cannot live in `render`: a page that has finished needs no
+    /// repaint, so frames stop, and with them any check that only happens
+    /// while drawing. A timer runs whether or not a frame is wanted; it asks
+    /// the page, which is the one party that always knows whether it finished.
+    fn watch_load(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let probe = ready_probe();
+        cx.spawn_in(window, async move |this, cx| {
+            // A page that is genuinely slow keeps its spinner, so this keeps
+            // asking until the load ends or the hard limit does.
+            for _ in 0..10 {
+                cx.background_executor().timer(probe).await;
+                let still_watching = this
+                    .update_in(cx, |this, _, cx| {
+                        let Some(index) = this.tab_index(id) else { return false };
+                        let tab = &mut this.tabs[index];
+                        if !tab.loading || tab.loading_expired(Instant::now(), SLOW_LOAD) {
+                            return false;
+                        }
+                        if !tab.ready_probed {
+                            tab.ready_probed = true;
+                            log::debug!("asking tab {id} whether its page finished");
+                            let _ = tab.raw(cx).evaluate_script(READY_PROBE_SCRIPT);
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !still_watching {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn animate(&self) -> bool {
@@ -548,6 +612,7 @@ impl Browser {
         // A page that was started ahead of time is used as it is: only its
         // address has to change, which the engine starts in a moment.
         if let Some(mut tab) = self.spare.take() {
+            let id = tab.id;
             tab.set_loading(true);
             tab.navigation = None;
             tab.title.clear();
@@ -555,6 +620,7 @@ impl Browser {
             let _ = tab.raw(cx).load_url(url);
             log::debug!("new tab used the page that was ready: {url}");
             self.insert_tab(tab, url, index, activate, window, cx);
+            self.watch_load(id, window, cx);
             self.schedule_spare(window, cx, Duration::from_millis(800));
             return;
         }
@@ -614,6 +680,7 @@ impl Browser {
 
         perf::mark(format!("tab {id} ready"));
         self.insert_tab(tab, url, index, activate, window, cx);
+        self.watch_load(id, window, cx);
     }
 
     /// Puts a page into the strip, showing it when it should be shown.
@@ -748,10 +815,12 @@ impl Browser {
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         tab.url = url.to_string();
         tab.set_loading(true);
+        let id = tab.id;
         let raw = tab.webview.read(cx).raw();
         let _ = raw.load_url(url);
         let _ = raw.focus();
         self.address.update(cx, |input, cx| input.set_value(address::display(url), window, cx));
+        self.watch_load(id, window, cx);
         cx.notify();
     }
 
@@ -932,13 +1001,18 @@ impl Browser {
                 cx.notify();
             }
             Cmd::Reload => {
+                let mut watch = None;
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     tab.set_loading(true);
                     tab.navigation = None;
+                    watch = Some(tab.id);
                 }
                 self.raw(cx, |w| {
                     let _ = w.reload();
                 });
+                if let Some(id) = watch {
+                    self.watch_load(id, window, cx);
+                }
                 cx.notify();
             }
             Cmd::Stop => {
@@ -955,9 +1029,14 @@ impl Browser {
                 // end.
                 let moved = self.raw(cx, |w| native::can_go_back(w) && native::go_back(w));
                 if moved == Some(true) {
+                    let mut watch = None;
                     if let Some(tab) = self.tabs.get_mut(self.active) {
                         tab.set_loading(true);
                         tab.navigation = None;
+                        watch = Some(tab.id);
+                    }
+                    if let Some(id) = watch {
+                        self.watch_load(id, window, cx);
                     }
                     cx.notify();
                 }
@@ -965,9 +1044,14 @@ impl Browser {
             Cmd::Forward => {
                 let moved = self.raw(cx, |w| native::can_go_forward(w) && native::go_forward(w));
                 if moved == Some(true) {
+                    let mut watch = None;
                     if let Some(tab) = self.tabs.get_mut(self.active) {
                         tab.set_loading(true);
                         tab.navigation = None;
+                        watch = Some(tab.id);
+                    }
+                    if let Some(id) = watch {
+                        self.watch_load(id, window, cx);
                     }
                     cx.notify();
                 }
@@ -1096,6 +1180,9 @@ impl Browser {
         // every event of every tab is wasted work.
         let old_display = is_active.then(|| address::display(&self.tabs[index].url));
         let mut url_changed = false;
+        // A load that started needs watching even when the tab is hidden, so
+        // the check runs on a timer rather than while drawing.
+        let mut started = None;
         match event {
             PageEvent::TitleChanged(title) => {
                 // Pages rewrite document.title constantly (counters, SPAs,
@@ -1111,6 +1198,7 @@ impl Browser {
             PageEvent::LoadStarted(url) => {
                 let tab = &mut self.tabs[index];
                 tab.set_loading(true);
+                started = Some(tab.id);
                 tab.navigation = None;
                 url_changed = tab.url != url;
                 // A new document: the old document's title no longer applies.
@@ -1204,6 +1292,14 @@ impl Browser {
                     self.set_page_fullscreen(on, window);
                 }
             }
+            PageEvent::DocumentReady => {
+                // Said by the page itself, so this ends a load whose
+                // load-finished event never came.
+                if self.tabs[index].loading {
+                    log::debug!("the page is complete; ending the load for it");
+                    self.tabs[index].set_loading(false);
+                }
+            }
             PageEvent::Audio(on) => self.tabs[index].audible = on,
             PageEvent::FindResult(n) => {
                 if is_active && self.find_open {
@@ -1232,6 +1328,9 @@ impl Browser {
                 self.address.update(cx, |input, cx| input.set_value(url, window, cx));
             }
             self.update_window_title(window);
+        }
+        if let Some(id) = started {
+            self.watch_load(id, window, cx);
         }
         self.flush_if_due();
         cx.notify();
@@ -2290,7 +2389,7 @@ impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         perf::mark_once("first frame");
         self.flush_if_due();
-        self.expire_stuck_loading();
+        self.expire_stuck_loading(cx);
         if self.pending.is_some() {
             self.restore(window, cx);
         }

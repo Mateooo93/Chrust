@@ -44,6 +44,9 @@ pub enum PageEvent {
     Shortcut(Shortcut),
     DownloadStarted(PathBuf),
     DownloadFinished { path: Option<PathBuf>, success: bool },
+    /// The page itself says its document is complete; the engine's own
+    /// load-finished message went missing.
+    DocumentReady,
     Fullscreen(bool),
     Audio(bool),
     FindResult(usize),
@@ -161,6 +164,9 @@ pub struct Tab {
     /// When `loading` was last switched on, so a load whose finishing event
     /// never arrives cannot leave the spinner turning forever.
     pub loading_since: Option<std::time::Instant>,
+    /// Whether this load already asked the page whether it finished, so a
+    /// slow page is asked once instead of on every frame.
+    pub ready_probed: bool,
     /// Latest engine navigation result; only valid while `url` matches the
     /// navigation it describes.
     pub navigation: Option<crate::native::NavigationStatus>,
@@ -184,6 +190,7 @@ impl Tab {
         }
         self.loading = loading;
         self.loading_since = loading.then(std::time::Instant::now);
+        self.ready_probed = false;
     }
 
     /// Whether the loading state has been on for longer than any page should
@@ -415,6 +422,7 @@ impl Tab {
                                 send(PageEvent::Shortcut(s));
                             }
                         }
+                        Some("ready") => send(PageEvent::DocumentReady),
                         Some("aurora") if from_internal => send(PageEvent::Internal(msg)),
                         _ => {}
                     }
@@ -490,6 +498,7 @@ impl Tab {
             url: url.to_string(),
             loading: true,
             loading_since: Some(std::time::Instant::now()),
+            ready_probed: false,
             navigation: None,
             audible: false,
             muted: false,
