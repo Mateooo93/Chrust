@@ -10,7 +10,7 @@ use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebViewBuilder, http};
 
 use crate::library::Shared;
 use crate::native::{self, NativeEvent};
-use crate::{address, browser, extensions, pages, signin, storage};
+use crate::{address, browser, extensions, pages, signin, storage, youtube};
 
 pub type TabId = u64;
 
@@ -107,6 +107,14 @@ impl Shortcut {
         })
     }
 }
+
+/// The page-side half of `youtube::applies`: the script is injected into every
+/// top-level page, so it has to check the address it actually landed on.
+const YOUTUBE_PAGE_TEST: &str = r#"() => {
+  const h = location.hostname.toLowerCase();
+  return h === "youtube.com" || h.endsWith(".youtube.com")
+    || h === "youtube-nocookie.com" || h.endsWith(".youtube-nocookie.com");
+}"#;
 
 /// Injected into every top-level page. Only reports *that* something
 /// happened; the browser reads the real URL from WebView2 itself, so a page
@@ -380,6 +388,13 @@ impl Tab {
             .with_focused(focused)
             .with_back_forward_navigation_gestures(true)
             .with_initialization_script_for_main_only(PAGE_SCRIPT, true)
+            // An initialization script also runs on later navigations, but
+            // only YouTube pages should get the ad skipper; every other page
+            // keeps its own JSON parser untouched.
+            .with_initialization_script_for_main_only(
+                &format!("if ({}()) {{ {} }}", YOUTUBE_PAGE_TEST, youtube::SCRIPT),
+                true,
+            )
             .with_custom_protocol("chrustport".into(), {
                 let page = page_context(&lib, private);
                 move |_, request| serve(&page, &request)

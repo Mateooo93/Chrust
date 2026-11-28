@@ -22,6 +22,7 @@ mod storage;
 mod tab;
 mod themes;
 mod update;
+mod youtube;
 
 fn main() {
     // First thing, so every later timing is measured from here.
