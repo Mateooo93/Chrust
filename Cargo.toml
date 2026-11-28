@@ -34,6 +34,8 @@ webview2-com = "0.38"
 windows-core = "0.61"
 # Error codes from the engine, to recognise the one that means "retry".
 windows = "0.61"
+# Default-browser registration, which is all HKCU: see `assoc`.
+winreg = "0.56"
 
 [build-dependencies]
 embed-resource = "3"

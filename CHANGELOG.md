@@ -2,6 +2,17 @@
 
 ## Unreleased – ad blocking and Google accounts
 
+- ChrustPort can register itself as a browser, so Windows offers it in
+  Settings › Apps › Default apps. Windows will not let a program choose
+  itself as the default, so registering adds it to the list and the user
+  picks it there; Settings › About has buttons for both registering and
+  opening that page. Registration is per user (`HKCU`) and covers
+  `Software\Clients\StartMenuInternet\ChrustPort`, `RegisteredApplications`
+  and a `ChrustPortHTM` ProgId for `http` and `https`; the installer's
+  uninstall script unregisters it. `--register-browser` and
+  `--unregister-browser` do the same from a command line. A link opens in a
+  new Chrust window (`chrust-port.exe <url>`).
+
 - This build is the `chrust-port` port: the executable is `chrust-port.exe` and
   its own pages, protocol and settings identifiers use `chrustport` so they
   cannot collide with an installed Chrust. Bookmarks, history and the WebView2

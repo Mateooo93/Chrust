@@ -5,6 +5,7 @@
 
 mod address;
 mod adblock;
+mod assoc;
 mod browser;
 mod crashlog;
 mod engine;
@@ -47,8 +48,26 @@ fn main() {
         std::process::exit(101);
     }));
 
+    // Registering as a browser and quitting: no window, no engine. Done
+    // before anything else so the exe Windows launches for the setting does
+    // not flash a window or touch the profile.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if assoc::is_admin_request(&raw_args) {
+        let exe = std::env::current_exe().unwrap_or_default();
+        let result = if assoc::wants_unregister(&raw_args) {
+            assoc::unregister()
+        } else {
+            assoc::register(&exe)
+        };
+        match result {
+            Ok(()) => log::info!("browser registration updated"),
+            Err(err) => log::error!("could not update browser registration: {err}"),
+        }
+        return;
+    }
+
     // `chrust <url> [url...]` opens those pages instead of restoring the last session.
-    let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
+    let args: Vec<String> = raw_args.into_iter().filter(|a| !a.starts_with('-')).collect();
 
     // Start compiling the ad blocking rules while the window is still being
     // built, so the first page opened already has an engine to ask. Upstream

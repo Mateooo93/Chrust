@@ -468,6 +468,7 @@ pub fn settings(lib: &Library) -> String {
             .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
             .collect::<Vec<_>>(),
         "dataDir": crate::storage::data_dir().display().to_string(),
+        "registered": crate::assoc::is_registered(),
         "releaseRepo": crate::update::REPO,
         "canInstall": crate::update::CAN_INSTALL,
     });
@@ -612,6 +613,9 @@ code{{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px;color:var(
         <button class="btn" id="update">Check for updates</button></div>
       <div class="row"><div class="t"><b>Updates</b><small><span id="updnote">From <span id="ghrepo"></span>. Chrust replaces only its own files, keeps your data, and restarts when done.</span></small></div>
         <button class="btn" data-cmd="open_downloads">Show downloads</button></div>
+      <div class="row"><div class="t"><b>Default browser</b><small id="defstate">Windows does not let a browser make itself the default. Registering adds Chrust to "Default apps"; you then pick it there.</small></div>
+        <button class="btn" id="register-browser">Register as a browser</button>
+        <button class="btn" id="default-apps">Open Default apps</button></div>
     </div>
   </section>
 </div>
@@ -778,6 +782,9 @@ document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = () => {{
 
 $("ver").textContent = D.version; $("ever").textContent = D.engineVersion; $("datadir").textContent = D.dataDir;
 $("ghrepo").textContent = "github.com/" + D.releaseRepo;
+$("register-browser").onclick = () => {{ send({{ cmd: "register_browser" }}); __chrustportToast("Registering Chrust as a browser…"); }};
+$("default-apps").onclick = () => {{ send({{ cmd: "open_default_apps" }}); }};
+if (D.registered) $("defstate").textContent = "Registered. Pick ChrustPort under “Web browser” in Settings › Default apps.";
 if (D.canInstall) {{
   $("update").onclick = () => {{ __chrustportToast("Checking GitHub for updates…"); window.ipc.postMessage(JSON.stringify({{ kind: "chrustport", cmd: "check_for_updates" }})); }};
 }} else {{

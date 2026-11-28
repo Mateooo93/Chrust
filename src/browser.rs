@@ -1364,6 +1364,30 @@ impl Browser {
             // takes effect in the next process. The session is saved first so
             // the next window reopens these tabs.
             "restart" => self.restart(cx),
+            // Windows keeps the default-browser choice to itself; registering
+            // only adds Chrust to the list, and the user picks it in Settings.
+            "register_browser" => {
+                let exe = std::env::current_exe().unwrap_or_default();
+                match crate::assoc::register(&exe) {
+                    Ok(()) => {
+                        self.notify_page(tab, "Registered. Pick ChrustPort in Settings › Default apps.", cx);
+                    }
+                    Err(err) => {
+                        log::error!("could not register as a browser: {err}");
+                        self.notify_page(tab, &format!("Could not register: {err}"), cx);
+                    }
+                }
+            }
+            "open_default_apps" => {
+                // The page Windows opens for the choice, when it exists.
+                let target = "ms-settings:defaultapps";
+                if let Err(err) = std::process::Command::new("cmd")
+                    .args(["/c", "start", "", target])
+                    .spawn()
+                {
+                    log::warn!("could not open {target}: {err}");
+                }
+            }
             "remove_bookmark" => {
                 if let Some(url) = msg["url"].as_str() {
                     self.lib.borrow_mut().remove_bookmark(url);

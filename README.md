@@ -94,6 +94,32 @@ Chrust draws a built-in mark. To use your own, save a square image as
 `assets/chrust/chrust-64.png`. Cargo does not notice the image changing, so
 run `cargo clean -p chrust` after replacing it.
 
+## Default browser
+
+Windows 11 will not let a program make itself the default; only the user can
+choose, in **Settings › Apps › Default apps**. What Chrust can do is register
+itself as a browser so it appears there:
+
+```powershell
+.\target\release\chrust-port.exe --register-browser    # add to "Default apps"
+.\target\release\chrust-port.exe --unregister-browser  # remove again
+```
+
+Settings › About has a **Register as a browser** button that runs the first
+command and a **Default apps** button that opens the Settings page. The
+installer's uninstall script runs the second.
+
+Registration is per user (`HKCU`) and touches only Chrust's own keys:
+`Software\Clients\StartMenuInternet\ChrustPort` with its `Capabilities`,
+`Software\RegisteredApplications`, and the `ChrustPortHTM` ProgId that
+`http` and `https` links are opened with. Chrust opens a link by starting
+normally with the address as its argument, the same as
+`chrust-port.exe https://example.com`.
+
+A link clicked while Chrust is already open starts a second window rather
+than a tab in the first, because the new process cannot join the running
+one; closing the extra window keeps both on the profile they share.
+
 ## Releases
 
 Pushing a tag like `v0.4.1` builds `chrust.exe` and `chrust-setup.exe` on GitHub
