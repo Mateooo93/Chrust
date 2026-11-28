@@ -24,7 +24,7 @@ pub fn search_engine(id: &str) -> &'static SearchEngine {
 }
 
 pub const BACKGROUNDS: &[(&str, &str)] = &[
-    ("aurora", "Chrust (animated)"),
+    ("chrustport", "Chrust (animated)"),
     ("nebula", "Nebula (animated)"),
     ("grid", "Dev grid"),
     ("sunset", "Sunset"),
@@ -53,13 +53,22 @@ pub struct Settings {
     pub save_passwords: bool,
     pub show_dev_tools_button: bool,
     pub smooth_animations: bool,
+    /// Stop requests the ad blocker's rules match. Private windows always
+    /// block, whatever this says (see `adblock`).
+    pub adblock: bool,
+    /// Download EasyList and EasyPrivacy and add them to the bundled rules.
+    pub adblock_upstream: bool,
+    /// VPN / proxy address, such as `socks5://127.0.0.1:9150`. Empty means
+    /// pages connect directly. `CHRUST_PROXY` overrides it for one run; see
+    /// `proxy`.
+    pub proxy: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "system".into(),
-            background: "aurora".into(),
+            background: "chrustport".into(),
             background_url: String::new(),
             search_engine: "google".into(),
             show_bookmarks_bar: true,
@@ -69,6 +78,9 @@ impl Default for Settings {
             save_passwords: true,
             show_dev_tools_button: true,
             smooth_animations: true,
+            adblock: true,
+            adblock_upstream: false,
+            proxy: String::new(),
         }
     }
 }
@@ -105,6 +117,19 @@ impl Settings {
             "save_passwords" => flag(value).map(|v| self.save_passwords = v).is_some(),
             "show_dev_tools_button" => flag(value).map(|v| self.show_dev_tools_button = v).is_some(),
             "smooth_animations" => flag(value).map(|v| self.smooth_animations = v).is_some(),
+            "adblock" => flag(value).map(|v| self.adblock = v).is_some(),
+            "adblock_upstream" => flag(value).map(|v| self.adblock_upstream = v).is_some(),
+            "proxy" => {
+                let Some(address) = value.as_str() else { return false };
+                if crate::proxy::validate_address(address).is_err() {
+                    return false;
+                }
+                match crate::proxy::parse_address(address) {
+                    Some(address) => self.proxy = address,
+                    None => self.proxy.clear(),
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -126,6 +151,34 @@ mod tests {
         assert!(!s.show_clock);
         assert!(!s.set("background_url", &json!("javascript:alert(1)")));
         assert!(!s.set("nope", &json!(true)));
+    }
+
+    #[test]
+    fn proxy_is_normalised_and_validated() {
+        let mut s = Settings::default();
+        assert_eq!(s.proxy, "");
+        assert!(s.set("proxy", &json!("http://proxy:3128")));
+        assert_eq!(s.proxy, "http://proxy:3128");
+        assert!(s.set("proxy", &json!("socks5://127.0.0.1:9150")));
+        assert_eq!(s.proxy, "socks5://127.0.0.1:9150");
+        // A bad address leaves the old one in place.
+        assert!(!s.set("proxy", &json!("127.0.0.1:9150")));
+        assert!(!s.set("proxy", &json!("socks5://127.0.0.1:9150 --proxy-bypass-list=x")));
+        assert!(!s.set("proxy", &json!("ftp://proxy:21")));
+        assert!(!s.set("proxy", &json!(3)));
+        assert_eq!(s.proxy, "socks5://127.0.0.1:9150");
+        // An empty address turns it off.
+        assert!(s.set("proxy", &json!("")));
+        assert_eq!(s.proxy, "");
+    }
+
+    #[test]
+    fn proxy_survives_a_save_and_load() {
+        let mut s = Settings::default();
+        assert!(s.set("proxy", &json!("socks5://127.0.0.1:9150")));
+        let text = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.proxy, "socks5://127.0.0.1:9150");
     }
 
     #[test]

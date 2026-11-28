@@ -5,7 +5,7 @@ edition = "2024"
 description = "Chrust: a web browser with a GPUI interface and the WebView2 engine"
 
 [[bin]]
-name = "chrust"
+name = "chrust-port"
 path = "src/main.rs"
 
 [dependencies]
@@ -23,6 +23,10 @@ ureq = "2.12"
 # Chrome Web Store packages are zip files with a signed header in front.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 base64 = "0.22"
+# Brave's filter engine: Adblock Plus syntax, optimized matching. Single
+# threaded edition, because the engine is built on whatever thread asked and
+# then shared; see `adblock`.
+adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
 
 [target.'cfg(windows)'.dependencies]
 # Same versions wry uses, for WebView2 features wry does not wrap.
@@ -30,6 +34,8 @@ webview2-com = "0.38"
 windows-core = "0.61"
 # Error codes from the engine, to recognise the one that means "retry".
 windows = "0.61"
+# Default-browser registration, which is all HKCU: see `assoc`.
+winreg = "0.56"
 
 [build-dependencies]
 embed-resource = "3"

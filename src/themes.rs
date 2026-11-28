@@ -32,7 +32,7 @@ const fn p(
 }
 
 pub const PALETTES: &[Palette] = &[
-    p("aurora", "Aurora", true, [0x10131f, 0x0b0d17, 0x1a1f33, 0x262c45, 0xe6e8f2, 0x8b91a8, 0x8b7bff, 0x2dd4bf]),
+    p("chrustport", "ChrustPort", true, [0x10131f, 0x0b0d17, 0x1a1f33, 0x262c45, 0xe6e8f2, 0x8b91a8, 0x8b7bff, 0x2dd4bf]),
     p("midnight", "Midnight", true, [0x0c0c0f, 0x060608, 0x17171c, 0x24242b, 0xeaeaea, 0x8a8a94, 0x22d3ee, 0xa78bfa]),
     p("tokyo-night", "Tokyo Night", true, [0x1a1b26, 0x16161e, 0x24283b, 0x2f3549, 0xc0caf5, 0x7a82a8, 0x7aa2f7, 0xbb9af7]),
     p("catppuccin", "Catppuccin Mocha", true, [0x1e1e2e, 0x181825, 0x2a2b3d, 0x393a50, 0xcdd6f4, 0x9399b2, 0xcba6f7, 0xf5c2e7]),
@@ -45,7 +45,7 @@ pub const PALETTES: &[Palette] = &[
 ];
 
 /// The "system" choice picks one of these from the Windows light/dark setting.
-pub const SYSTEM_DARK: &str = "aurora";
+pub const SYSTEM_DARK: &str = "chrustport";
 pub const SYSTEM_LIGHT: &str = "light";
 
 pub fn palette(id: &str, appearance: WindowAppearance) -> &'static Palette {
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(ids.len(), PALETTES.len());
         assert_eq!(palette("system", WindowAppearance::Dark).id, SYSTEM_DARK);
         assert_eq!(palette("system", WindowAppearance::Light).id, SYSTEM_LIGHT);
-        assert_eq!(palette("nope", WindowAppearance::Light).id, "aurora");
+        assert_eq!(palette("nope", WindowAppearance::Light).id, "chrustport");
     }
 
     #[test]

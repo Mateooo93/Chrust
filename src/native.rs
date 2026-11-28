@@ -24,16 +24,24 @@ pub enum NativeEvent {
 
 #[cfg(windows)]
 mod imp {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2, ICoreWebView2_8, ICoreWebView2NavigationCompletedEventArgs,
-        ICoreWebView2Settings4,
+        ICoreWebView2, ICoreWebView2Environment, ICoreWebView2NavigationCompletedEventArgs,
+        ICoreWebView2Settings4, ICoreWebView2WebResourceRequest,
+        ICoreWebView2WebResourceRequestedEventArgs, ICoreWebView2WebResourceResponse,
+        ICoreWebView2_22, ICoreWebView2_8,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
     };
     use webview2_com::{
-        ContainsFullScreenElementChangedEventHandler, IsDocumentPlayingAudioChangedEventHandler,
-        NavigationCompletedEventHandler,
+        take_pwstr, ContainsFullScreenElementChangedEventHandler,
+        IsDocumentPlayingAudioChangedEventHandler, NavigationCompletedEventHandler,
+        WebResourceRequestedEventHandler,
     };
-    use webview2_com::take_pwstr;
-    use windows_core::{BOOL, Interface as _, PWSTR};
+    use windows::core::HSTRING;
+    use windows_core::{BOOL, Interface as _, PCWSTR, PWSTR};
     use wry::WebViewExtWindows as _;
 
     use super::{NativeEvent, NavigationStatus};
@@ -77,6 +85,126 @@ mod imp {
         if let Ok(settings) = settings.and_then(|s| s.cast::<ICoreWebView2Settings4>()) {
             let _ = unsafe { settings.SetIsPasswordAutosaveEnabled(enabled) };
             let _ = unsafe { settings.SetIsGeneralAutofillEnabled(enabled) };
+        }
+    }
+
+    /// Stops requests the ad blocker says are ads or trackers.
+    ///
+    /// Every request a page makes comes through WebView2 before it leaves the
+    /// machine, including the ones a page script starts, service workers' and
+    /// subframes'. A blocked request is answered with an empty body and a
+    /// failure status, which is what a browser with its own network stack
+    /// does: scripts see a failed fetch, `img` elements fire `error`, and the
+    /// page carries on. `private` tabs always block, so the address of the
+    /// tab and the address bar cannot disagree.
+    pub fn watch_requests(webview: &wry::WebView, private: bool) {
+        let core = webview.webview();
+        // One filter for every context: images, scripts, fetches, frames,
+        // media and the top-level document. The engine decides by request
+        // type. The `_22` method also covers shared workers and the like;
+        // older runtimes fall back to the method every version has.
+        if let Ok(core22) = core.cast::<ICoreWebView2_22>() {
+            let _ = unsafe {
+                core22.AddWebResourceRequestedFilterWithRequestSourceKinds(
+                    &HSTRING::from("*"),
+                    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+                )
+            };
+        } else {
+            let _ = unsafe {
+                core.AddWebResourceRequestedFilter(&HSTRING::from("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)
+            };
+        }
+
+        // The environment makes the response; it is per browser process, and
+        // this page's own environment is the shared one (see `engine`). Rc
+        // and RefCell because WebView2 calls this on the window thread only.
+        let environment = Rc::new(RefCell::new(Some(webview.environment())));
+
+        let mut token = 0i64;
+        let handler = WebResourceRequestedEventHandler::create(Box::new(
+            move |sender: Option<ICoreWebView2>,
+                  args: Option<ICoreWebView2WebResourceRequestedEventArgs>| {
+                let (Some(sender), Some(args)) = (sender, args) else { return Ok(()) };
+                let Some(url) = (unsafe { request_uri(&args) }) else { return Ok(()) };
+                // Not every request can be blocked, and not every resource
+                // type has a rule: the engine does it quickly, but a 403 on a
+                // WebSocket or a data: URL would break a page for nothing.
+                if !is_http(&url) {
+                    return Ok(());
+                }
+                let context = unsafe {
+                    let mut context = Default::default();
+                    args.ResourceContext(&mut context).map(|()| context).unwrap_or_default()
+                };
+                let kind = crate::adblock::request_type(context.0);
+                // The page that asked. For the document itself this is the
+                // address being opened, which is what makes first-party
+                // checks (`domain=site`) work for a top-level load.
+                let source = unsafe { page_url(&sender) };
+                if !crate::adblock::should_block(&url, &source, kind, private) {
+                    return Ok(());
+                }
+                let Some(environment) = environment.borrow().clone() else { return Ok(()) };
+                if let Ok(response) = unsafe { blocked_response(&environment) } {
+                    let _ = unsafe { args.SetResponse(&response) };
+                    log::debug!("adblock: blocked {kind} {url} on {source}");
+                } else {
+                    log::debug!("adblock: matched {kind} {url} but could not answer");
+                }
+                Ok(())
+            },
+        ));
+        let _ = unsafe { core.add_WebResourceRequested(&handler, &mut token) };
+    }
+
+    /// Only ordinary web requests can be answered with a synthetic response.
+    fn is_http(url: &str) -> bool {
+        url.starts_with("http://") || url.starts_with("https://")
+    }
+
+    /// The URI of a request, or `None` if WebView2 would not give it.
+    unsafe fn request_uri(args: &ICoreWebView2WebResourceRequestedEventArgs) -> Option<String> {
+        // SAFETY: `args` is a live interface owned by the caller; `Request`
+        // hands back an owned reference, and `Uri` fills a string that is
+        // released here with the COM allocator.
+        let request: ICoreWebView2WebResourceRequest = unsafe { args.Request() }.ok()?;
+        let mut uri = PWSTR::null();
+        unsafe { request.Uri(&mut uri) }.ok()?;
+        if uri.is_null() {
+            return None;
+        }
+        Some(take_pwstr(uri))
+    }
+
+    /// The address of the page, which every request of the page names as its
+    /// source.
+    unsafe fn page_url(webview: &ICoreWebView2) -> String {
+        let mut source = PWSTR::null();
+        if unsafe { webview.Source(&mut source) }.is_err() || source.is_null() {
+            return String::new();
+        }
+        take_pwstr(source)
+    }
+
+    /// A 403 with an empty body: what a browser's own network stack hands a
+    /// page for a blocked request. `img` elements fire `error`, `fetch` sees a
+    /// failed request, and nothing waits for a response that never comes.
+    unsafe fn blocked_response(
+        environment: &ICoreWebView2Environment,
+    ) -> windows::core::Result<ICoreWebView2WebResourceResponse> {
+        let reason = HSTRING::from("Blocked");
+        let headers = HSTRING::from("content-length: 0");
+        // No body stream: the response is complete with an empty one, and a
+        // blocked resource has nothing to hand back.
+        unsafe {
+            environment.CreateWebResourceResponse(
+                None,
+                403,
+                PCWSTR(reason.as_ptr()),
+                PCWSTR(headers.as_ptr()),
+            )
         }
     }
 
@@ -173,6 +301,7 @@ mod imp {
     }
     pub fn set_muted(_: &wry::WebView, _: bool) {}
     pub fn set_save_passwords(_: &wry::WebView, _: bool) {}
+    pub fn watch_requests(_: &wry::WebView, _: bool) {}
     pub fn watch(_: &wry::WebView, _: impl Fn(NativeEvent) + Clone + 'static) {}
 
 }

@@ -22,6 +22,11 @@ the browser.
 
 - Tabs with loading indicators that end when a page fails, session restore,
   and private windows that leave no history.
+- Ad and tracker blocking, on by default: requests are checked against Brave's
+  filter engine and stopped before they leave the machine, including YouTube's
+  in-stream ads. See [Ad blocking](#ad-blocking).
+- Google account sign-in from Settings › Privacy; sites that offer "Sign in
+  with Google" then use the same session.
 - Chromium-style keyboard shortcuts (`Ctrl+T`, `Ctrl+W`, `Ctrl+Tab`, `Ctrl+L`,
   `Ctrl+F`, `F11`, and more); see Settings > Shortcuts for the full list.
 - Bookmarks, history, downloads, find in page, zoom, DevTools, page source.
@@ -36,10 +41,10 @@ Requirements: Windows 10 or 11 with the WebView2 runtime (preinstalled on both),
 Rust 1.85 or newer, and the MSVC build tools.
 
 ```powershell
-git clone https://github.com/Mateooo93/aurora
-cd chrust
+git clone https://github.com/Mateooo93/chrust-port
+cd chrust-port
 cargo build --release
-.\target\release\aurora.exe
+.\target\release\chrust-port.exe
 ```
 
 The first build takes a while: the release profile is optimized heavily (full
@@ -54,7 +59,7 @@ stopwatch, ask it to measure itself and close:
 ```powershell
 $env:CHRUST_DATA_DIR = "$env:TEMP\chrust-measure"   # never the profile you use
 $env:CHRUST_SELFTEST = "4000"                       # close after four seconds
-.\target\release\chrust.exe
+.\target\release\chrust-port.exe
 Get-Content "$env:TEMP\chrust-measure\chrust.log"
 ```
 
@@ -89,6 +94,32 @@ Chrust draws a built-in mark. To use your own, save a square image as
 `assets/chrust/chrust-64.png`. Cargo does not notice the image changing, so
 run `cargo clean -p chrust` after replacing it.
 
+## Default browser
+
+Windows 11 will not let a program make itself the default; only the user can
+choose, in **Settings › Apps › Default apps**. What Chrust can do is register
+itself as a browser so it appears there:
+
+```powershell
+.\target\release\chrust-port.exe --register-browser    # add to "Default apps"
+.\target\release\chrust-port.exe --unregister-browser  # remove again
+```
+
+Settings › About has a **Register as a browser** button that runs the first
+command and a **Default apps** button that opens the Settings page. The
+installer's uninstall script runs the second.
+
+Registration is per user (`HKCU`) and touches only Chrust's own keys:
+`Software\Clients\StartMenuInternet\ChrustPort` with its `Capabilities`,
+`Software\RegisteredApplications`, and the `ChrustPortHTM` ProgId that
+`http` and `https` links are opened with. Chrust opens a link by starting
+normally with the address as its argument, the same as
+`chrust-port.exe https://example.com`.
+
+A link clicked while Chrust is already open starts a second window rather
+than a tab in the first, because the new process cannot join the running
+one; closing the extra window keeps both on the profile they share.
+
 ## Releases
 
 Pushing a tag like `v0.4.1` builds `chrust.exe` and `chrust-setup.exe` on GitHub
@@ -96,15 +127,63 @@ Actions and publishes them as a release (`.github/workflows/release.yml`).
 "Check for updates" reads that release. Bump `version` in `Cargo.toml` with the
 tag so the check recognises the build as newer.
 
-### Proxy
+### Proxy and VPN
 
-Set `AURORA_PROXY` before starting Chrust to send everything through a proxy:
-the page engine, extension downloads, update checks and site icons.
+Settings › Privacy › **VPN** sends every page and every download through a
+VPN or proxy. Chrust does not run a VPN client of its own, so the address is
+the tunnel one is already listening on: pick your app from the preset list
+(Mullvad, Proton VPN, NordVPN, Surfshark and the rest use
+`socks5://127.0.0.1:1080`, `9050` or `8080`), or type `socks5://host:port` or
+`http://host:port`. Chrust only accepts an address with a scheme and a port,
+so a typo cannot turn into a tunnel to nothing. A change applies on restart,
+which the card offers; your tabs are reopened afterwards.
+
+`CHRUST_PROXY`, set before starting Chrust, overrides the saved address for
+that run. Either way the page engine, extension downloads, update checks and
+site icons all go through it.
 
 ```powershell
-$env:AURORA_PROXY = "socks5://127.0.0.1:9150"   # or http://127.0.0.1:8080
-.	argetelease\chrust.exe
+$env:CHRUST_PROXY = "socks5://127.0.0.1:9150"   # or http://127.0.0.1:8080
+.\target\release\chrust-port.exe
 ```
+
+## Ad blocking
+
+Ad blocking is on by default and works without an extension. Every request a
+page makes goes through Brave's `adblock` engine (the one behind Brave's
+shields, matching the same Adblock Plus syntax as uBlock Origin); a matching
+request is answered with an empty 403 before it can load.
+
+The rules are built into `chrust.exe` so a fresh install blocks on its first
+page and keeps blocking offline:
+
+- `assets/filters/chrust-adhosts.txt` – a host blocklist, generated from
+  [pgl.yoyo.org](https://pgl.yoyo.org/adservers/).
+- `assets/filters/chrust-curated.txt` – first-party ad and tracking hosts a
+  host-only list misses, plus the rules YouTube needs for its in-stream ads
+  (Google's ad delivery hosts and `youtube.com/api/stats/ads`,
+  `youtube.com/pagead/`, `youtube.com/ptracking`).
+
+Settings › Privacy can add the daily **EasyList** and **EasyPrivacy** lists on
+top of those rules. They are downloaded in the background when Chrust starts;
+a failed download leaves the built-in rules in place.
+
+The lists are generated by `node tools/update-filters/build.js`; regenerate
+them before a release. Adding a rule by hand to `chrust-curated.txt` is fine,
+but it is overwritten by the next regeneration because the curated list lives
+in `build.js`.
+
+## Google accounts
+
+Settings › Privacy › **Sign in** opens Google's own sign-in page. Chrust does
+not create an account or keep a token of its own: signing in leaves Google's
+cookies in the WebView2 profile, exactly as browsing to the site would, and
+every site that offers "Sign in with Google" uses that session. Clearing
+browsing data signs out everywhere, Google included.
+
+The sign-in pages are listed in `src/signin.rs`. Ad blocking skips them, so a
+rule can never break a login, and a popup that asks for a size is opened by
+WebView2 itself, which keeps `window.opener` for the page that asked.
 
 ## Where Chrust keeps things
 

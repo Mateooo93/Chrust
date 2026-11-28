@@ -1,7 +1,11 @@
-// No console window behind the browser in release builds.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// No console window behind the browser. This is set in every build, not just
+// release ones: a debug build that opened a console beside the window also
+// died with it when the console was closed. Output goes to `chrust.log`.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod address;
+mod adblock;
+mod assoc;
 mod browser;
 mod crashlog;
 mod engine;
@@ -14,10 +18,12 @@ mod pages;
 mod perf;
 mod proxy;
 mod settings;
+mod signin;
 mod storage;
 mod tab;
 mod themes;
 mod update;
+mod youtube;
 
 fn main() {
     // First thing, so every later timing is measured from here.
@@ -42,8 +48,31 @@ fn main() {
         std::process::exit(101);
     }));
 
+    // Registering as a browser and quitting: no window, no engine. Done
+    // before anything else so the exe Windows launches for the setting does
+    // not flash a window or touch the profile.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if assoc::is_admin_request(&raw_args) {
+        let exe = std::env::current_exe().unwrap_or_default();
+        let result = if assoc::wants_unregister(&raw_args) {
+            assoc::unregister()
+        } else {
+            assoc::register(&exe)
+        };
+        match result {
+            Ok(()) => log::info!("browser registration updated"),
+            Err(err) => log::error!("could not update browser registration: {err}"),
+        }
+        return;
+    }
+
     // `chrust <url> [url...]` opens those pages instead of restoring the last session.
-    let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
+    let args: Vec<String> = raw_args.into_iter().filter(|a| !a.starts_with('-')).collect();
+
+    // Start compiling the ad blocking rules while the window is still being
+    // built, so the first page opened already has an engine to ask. Upstream
+    // lists are fetched in the same background build when the setting is on.
+    adblock::warm(storage::load_settings().adblock_upstream);
 
     #[cfg(target_os = "linux")]
     let app = gpui_kit::platform::linux(gpui_kit::WindowingModes::X11);

@@ -2,12 +2,12 @@
 
 use url::Url;
 
-/// Built-in pages. WebView2 serves the custom `aurora` protocol at
-/// `http://aurora.<page>/`; the address bar shows them as `aurora://<page>`.
+/// Built-in pages. WebView2 serves the custom `chrustport` protocol at
+/// `http://chrustport.<page>/`; the address bar shows them as `chrustport://<page>`.
 pub const INTERNAL_PAGES: &[&str] = &["newtab", "settings", "install"];
 
-pub const NEW_TAB_URL: &str = "http://aurora.newtab/";
-pub const SETTINGS_URL: &str = "http://aurora.settings/";
+pub const NEW_TAB_URL: &str = "http://chrustport.newtab/";
+pub const SETTINGS_URL: &str = "http://chrustport.settings/";
 
 /// Converts address bar input into a URL to load, or `None` for blank input.
 /// `search` is a search URL template where `{}` stands for the query.
@@ -18,7 +18,7 @@ pub fn to_url(input: &str, search: &str) -> Option<String> {
     }
 
     if let Some(page) = internal_name(input) {
-        return Some(format!("http://aurora.{page}/"));
+        return Some(format!("http://chrustport.{page}/"));
     }
 
     // Windows paths such as `C:\Users\me\page.html`.
@@ -54,20 +54,20 @@ pub fn to_url(input: &str, search: &str) -> Option<String> {
     Some(search_url(search, input))
 }
 
-/// `aurora://settings`, `about:newtab` → `settings`, `newtab`.
+/// `chrustport://settings`, `about:newtab` → `settings`, `newtab`.
 fn internal_name(input: &str) -> Option<&'static str> {
     let lower = input.to_ascii_lowercase();
     let name = lower
-        .strip_prefix("aurora://")
+        .strip_prefix("chrustport://")
         .or_else(|| lower.strip_prefix("about:"))
-        .or_else(|| lower.strip_prefix("http://aurora.").or_else(|| lower.strip_prefix("aurora.")))?;
+        .or_else(|| lower.strip_prefix("http://chrustport.").or_else(|| lower.strip_prefix("chrustport.")))?;
     let name = name.trim_end_matches('/');
     INTERNAL_PAGES.iter().copied().find(|p| *p == name)
 }
 
 /// The built-in page name if `url` is one, e.g. `settings`.
 pub fn internal_page(url: &str) -> Option<&'static str> {
-    let rest = url.strip_prefix("http://aurora.")?;
+    let rest = url.strip_prefix("http://chrustport.")?;
     let name = rest.split(['/', '?', '#']).next()?;
     INTERNAL_PAGES.iter().copied().find(|p| *p == name)
 }
@@ -80,7 +80,7 @@ pub fn is_internal(url: &str) -> bool {
 pub fn display(url: &str) -> String {
     match internal_page(url) {
         Some("newtab") => String::new(),
-        Some(page) => format!("aurora://{page}"),
+        Some(page) => format!("chrustport://{page}"),
         None if url == "about:blank" => String::new(),
         None => url.to_string(),
     }
@@ -191,14 +191,14 @@ mod tests {
 
     #[test]
     fn internal_pages() {
-        assert_eq!(to_url("aurora://newtab", G).unwrap(), NEW_TAB_URL);
-        assert_eq!(to_url("aurora://settings/", G).unwrap(), SETTINGS_URL);
+        assert_eq!(to_url("chrustport://newtab", G).unwrap(), NEW_TAB_URL);
+        assert_eq!(to_url("chrustport://settings/", G).unwrap(), SETTINGS_URL);
         assert_eq!(to_url("about:settings", G).unwrap(), SETTINGS_URL);
-        assert_eq!(to_url("aurora://nope", G).unwrap(), "https://www.google.com/search?q=aurora%3A%2F%2Fnope");
-        assert!(is_new_tab("http://aurora.newtab"));
-        assert_eq!(internal_page("http://aurora.settings/#about"), Some("settings"));
+        assert_eq!(to_url("chrustport://nope", G).unwrap(), "https://www.google.com/search?q=chrustport%3A%2F%2Fnope");
+        assert!(is_new_tab("http://chrustport.newtab"));
+        assert_eq!(internal_page("http://chrustport.settings/#about"), Some("settings"));
         assert_eq!(display(NEW_TAB_URL), "");
-        assert_eq!(display(SETTINGS_URL), "aurora://settings");
+        assert_eq!(display(SETTINGS_URL), "chrustport://settings");
         assert_eq!(display("https://a.com/"), "https://a.com/");
     }
 }

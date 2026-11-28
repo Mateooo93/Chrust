@@ -3,7 +3,7 @@
 //! WebView2 runs extensions that sit unpacked in folders, so the store's own
 //! install button cannot drive it. Chrust therefore fetches the package the
 //! store serves (a `.crx`: a signed header in front of a zip), unpacks it
-//! into `%LOCALAPPDATA%\Aurora\Extensions\<id>`, and lets WebView2 load every
+//! into `%LOCALAPPDATA%\Chrust\Extensions\<id>`, and lets WebView2 load every
 //! folder there. Extensions that rely on Chrome-only APIs load but do
 //! nothing visible.
 
