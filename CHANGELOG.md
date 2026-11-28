@@ -1,5 +1,53 @@
 # Changes
 
+## Unreleased – ad blocking and Google accounts
+
+- ChrustPort can register itself as a browser, so Windows offers it in
+  Settings › Apps › Default apps. Windows will not let a program choose
+  itself as the default, so registering adds it to the list and the user
+  picks it there; Settings › About has buttons for both registering and
+  opening that page. Registration is per user (`HKCU`) and covers
+  `Software\Clients\StartMenuInternet\ChrustPort`, `RegisteredApplications`
+  and a `ChrustPortHTM` ProgId for `http` and `https`; the installer's
+  uninstall script unregisters it. `--register-browser` and
+  `--unregister-browser` do the same from a command line. A link opens in a
+  new Chrust window (`chrust-port.exe <url>`).
+
+- This build is the `chrust-port` port: the executable is `chrust-port.exe` and
+  its own pages, protocol and settings identifiers use `chrustport` so they
+  cannot collide with an installed Chrust. Bookmarks, history and the WebView2
+  profile are shared with Chrust, in `%LOCALAPPDATA%\Chrust`.
+
+- Ads and trackers are blocked before they load. Requests pass through Brave's
+  `adblock` filter engine (the one behind Brave's shields, so the same
+  Adblock Plus syntax as uBlock Origin) and a match is answered with an empty
+  403, exactly as a browser with its own network stack would. The rules ship
+  inside the executable, so blocking works on the first start and offline:
+  a 3,565-host blocklist plus a curated list that covers Google's ad
+  delivery hosts and YouTube's own ad endpoints.
+- YouTube ads are targeted directly: in-stream ads come from
+  `pubads.g.doubleclick.net` and from `youtube.com/api/stats/ads`,
+  `youtube.com/pagead/` and `youtube.com/ptracking`, none of which a
+  host-only list blocks without breaking the player. The player, the video
+  stream and the APIs it needs are explicitly left alone; the tests check
+  both directions.
+- Settings › Privacy has a switch for ad blocking, a switch to add the daily
+  EasyList and EasyPrivacy lists on top of the built-in rules (downloaded in
+  the background; a failed download keeps the working rules), and a status
+  line. A change applies without a restart.
+- Private windows always block, even when the setting is off, so a private
+  tab never shows what the profile has seen.
+- Extension scripts and page fetches are covered too: the filter applies to
+  every request WebView2 makes, including those started by content scripts,
+  service workers and subframes.
+- Google sign-in: Settings › Privacy has a Google account button that opens
+  Google's own sign-in page in a tab. The session stays in the browser's
+  WebView2 profile, so "Sign in with Google" on any site uses it and
+  Chrome-style clearing of site data signs out. Google's sign-in hosts are
+  recognised (`src/signin.rs`) and ad blocking never touches them, so a login
+  cannot be turned into a dead end by a rule; a popup that asks for a size
+  (the account chooser) is left to the engine, which keeps `window.opener`.
+
 ## 0.4.3 – instant tabs
 
 - A new tab no longer waits for the page engine: one page is started in the

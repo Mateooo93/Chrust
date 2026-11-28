@@ -33,7 +33,7 @@ use crate::tab::{PageEvent, Shortcut, Tab, TabId};
 use crate::{address, favicons, import, native, perf, settings};
 
 actions!(
-    aurora,
+    chrustport,
     [
         NewTab, NewWindow, NewPrivateWindow, CloseTab, ReopenClosedTab, NextTab, PrevTab,
         FocusAddress, Reload, GoBack, GoForward, GoHome, ToggleBookmark, OpenDevTools, Find,
@@ -473,7 +473,7 @@ impl Browser {
         let list = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
         let _ = self.tabs[i]
             .raw(cx)
-            .evaluate_script(&format!("window.__auroraBookmarks && window.__auroraBookmarks({list})"));
+            .evaluate_script(&format!("window.__chrustportBookmarks && window.__chrustportBookmarks({list})"));
     }
 
     /// Downloads a Chrome Web Store extension and hands it to the engine.
@@ -531,7 +531,7 @@ impl Browser {
             let msg = serde_json::to_string(message).unwrap_or_default();
             let _ = self.tabs[i]
                 .raw(cx)
-                .evaluate_script(&format!("window.__auroraToast && window.__auroraToast({msg})"));
+                .evaluate_script(&format!("window.__chrustportToast && window.__chrustportToast({msg})"));
         }
     }
 
@@ -1121,8 +1121,26 @@ impl Browser {
         }
     }
 
+    /// Starts a fresh Chrust once this one has closed, for settings that only
+    /// the next process can apply (the VPN, see `proxy`). The session is
+    /// written first so the new window reopens the same tabs, and the old
+    /// process is gone before the new one opens the profile.
+    fn restart(&mut self, cx: &mut Context<Self>) {
+        self.save_session();
+        let lib = self.lib.clone();
+        lib.borrow_mut().flush();
+        cx.on_app_quit(|_, _: &mut Context<Self>| {
+            if let Err(err) = spawn_after_exit() {
+                log::error!("could not restart Chrust: {err}");
+            }
+            async {}
+        })
+        .detach();
+        cx.quit();
+    }
+
     fn update_window_title(&mut self, window: &mut Window) {
-        let name = if self.private { "Chrust Private" } else { "Chrust" };
+        let name = if self.private { "ChrustPort Private" } else { "ChrustPort" };
         let title = match self.active_tab() {
             Some(tab) => format!("{} - {name}", tab.display_title()),
             None => name.into(),
@@ -1337,7 +1355,7 @@ impl Browser {
     }
 
     /// Commands from the settings and new tab pages. `tab.rs` only forwards
-    /// these when they come from an `aurora` page.
+    /// these when they come from a `chrustport` page.
     fn on_internal(&mut self, tab: TabId, msg: &Value, window: &mut Window, cx: &mut Context<Self>) {
         match msg["cmd"].as_str().unwrap_or_default() {
             "set" => {
@@ -1355,6 +1373,8 @@ impl Browser {
                 }
                 match key {
                     "theme" => library::apply_theme(cx),
+                    "adblock" => crate::adblock::set_enabled(self.lib.borrow().settings.adblock),
+                    "adblock_upstream" => crate::adblock::reload(self.lib.borrow().settings.adblock_upstream),
                     "save_passwords" => {
                         let on = self.lib.borrow().settings.save_passwords && !self.private;
                         for t in &self.tabs {
@@ -1415,6 +1435,9 @@ impl Browser {
                 let text = self.import_chrome(cx);
                 self.notify_page(tab, &text, cx);
             }
+            "google_sign_in" => {
+                self.open_tab("https://accounts.google.com/", true, window, cx);
+            }
             "open_devtools" => self.run(Cmd::DevTools, window, cx),
             "open_downloads" => self.run(Cmd::Panel(Panel::Downloads), window, cx),
             "open_webstore" => self.open_tab("https://chromewebstore.google.com/", true, window, cx),
@@ -1435,6 +1458,34 @@ impl Browser {
             "check_for_updates" => {
                 self.run(Cmd::CheckForUpdates, window, cx);
                 self.notify_page(tab, "Checking GitHub for updates…", cx);
+            }
+            // Network settings are read once at start-up, so a VPN change
+            // takes effect in the next process. The session is saved first so
+            // the next window reopens these tabs.
+            "restart" => self.restart(cx),
+            // Windows keeps the default-browser choice to itself; registering
+            // only adds Chrust to the list, and the user picks it in Settings.
+            "register_browser" => {
+                let exe = std::env::current_exe().unwrap_or_default();
+                match crate::assoc::register(&exe) {
+                    Ok(()) => {
+                        self.notify_page(tab, "Registered. Pick ChrustPort in Settings › Default apps.", cx);
+                    }
+                    Err(err) => {
+                        log::error!("could not register as a browser: {err}");
+                        self.notify_page(tab, &format!("Could not register: {err}"), cx);
+                    }
+                }
+            }
+            "open_default_apps" => {
+                // The page Windows opens for the choice, when it exists.
+                let target = "ms-settings:defaultapps";
+                if let Err(err) = std::process::Command::new("cmd")
+                    .args(["/c", "start", "", target])
+                    .spawn()
+                {
+                    log::warn!("could not open {target}: {err}");
+                }
             }
             "remove_bookmark" => {
                 if let Some(url) = msg["url"].as_str() {
@@ -2571,6 +2622,40 @@ fn open_path(path: &Path) {
     let _ = std::process::Command::new("explorer").arg(path).spawn();
     #[cfg(not(windows))]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+}
+
+/// Starts another Chrust once this process has ended, for the restart button
+/// in Settings. The window cannot simply re-run itself: the profile and the
+/// engine process belong to the old instance until it exits, so a tiny
+/// detached `cmd.exe` waits for this program to go, then starts it again
+/// with the same working folder.
+#[cfg(windows)]
+fn spawn_after_exit() -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    let exe = std::env::current_exe()?;
+    let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+    // `ping` is the wait; `start` hands the new copy to the shell, so this
+    // command (and its console) can go away. A debug build gets its own
+    // minimized console for its log output.
+    let flags = if cfg!(debug_assertions) { "/min" } else { "" };
+    let command = format!("ping -n 3 127.0.0.1 >nul & start \"\" {flags} \"{}\"", exe.display());
+    std::process::Command::new("cmd.exe")
+        .arg("/c")
+        .arg(command)
+        .current_dir(dir)
+        .creation_flags(0x00000008) // DETACHED_PROCESS
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(not(windows))]
+fn spawn_after_exit() -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("sleep 1; exec \"{}\" >/dev/null 2>&1 &", exe.display()))
+        .spawn()
+        .map(|_| ())
 }
 
 #[cfg(test)]

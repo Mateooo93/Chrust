@@ -6,7 +6,7 @@
 //!
 //! "Check for updates" asks GitHub for the newest release that ships an
 //! executable. When its version is newer than this build, the file downloads
-//! into `%LOCALAPPDATA%\Aurora\Updates` (and shows up in the downloads panel
+//! into `%LOCALAPPDATA%\Chrust\Updates` (and shows up in the downloads panel
 //! like any other download), then a small script waits for Chrust to close,
 //! swaps the executable in place, and starts it again. Only the executable is
 //! replaced: the profile, history and settings stay where they are. If moving
@@ -176,7 +176,7 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 /// An installed copy (under `%LOCALAPPDATA%\Programs\Chrust`) receives the
 /// browser executable, which the script swaps in place; the rest of the
 /// install and the shortcuts stay valid. A portable copy is updated the same
-/// way, in its own folder. The `aurora-setup.exe` installer is never picked
+/// way, in its own folder. The `chrust-setup.exe` installer is never picked
 /// automatically: replacing an installer would leave the old install behind.
 fn install(version: &str, address: &str) -> Result<Option<PathBuf>, String> {
     #[cfg(not(windows))]

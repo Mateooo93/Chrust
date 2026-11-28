@@ -16,12 +16,12 @@ param([switch]$quiet)
 
 Add-Type -AssemblyName System.Windows.Forms
 $ErrorActionPreference = 'Stop'
-$appDir = Join-Path $env:LOCALAPPDATA 'Programs\Chrust'
-$target = Join-Path $appDir 'chrust.exe'
+$appDir = Join-Path $env:LOCALAPPDATA 'Programs\ChrustPort'
+$target = Join-Path $appDir 'chrust-port.exe'
 $iconTarget = Join-Path $appDir 'chrust.ico'
 $startDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
-$startLink = Join-Path $startDir 'Chrust.lnk'
-$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Chrust'
+$startLink = Join-Path $startDir 'ChrustPort.lnk'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChrustPort'
 # ps2exe embeds this script, so the release build writes the version in as
 # a constant before packaging.
 $version = '0.0.0'
@@ -112,13 +112,13 @@ function Install-Chrust($files) {
     $link.TargetPath = $target
     $link.WorkingDirectory = $appDir
     if (Test-Path $iconTarget) { $link.IconLocation = $iconTarget }
-    $link.Description = 'Chrust browser'
+    $link.Description = 'ChrustPort browser'
     $link.Save()
 
     New-Item -Path $uninstallKey -Force | Out-Null
-    Set-ItemProperty $uninstallKey -Name DisplayName -Value 'Chrust'
+    Set-ItemProperty $uninstallKey -Name DisplayName -Value 'ChrustPort'
     Set-ItemProperty $uninstallKey -Name DisplayVersion -Value $version
-    Set-ItemProperty $uninstallKey -Name Publisher -Value 'Chrust'
+    Set-ItemProperty $uninstallKey -Name Publisher -Value 'ChrustPort'
     Set-ItemProperty $uninstallKey -Name InstallLocation -Value $appDir
     Set-ItemProperty $uninstallKey -Name DisplayIcon -Value $target
     Set-ItemProperty $uninstallKey -Name NoModify -Type DWord -Value 1
@@ -127,9 +127,11 @@ function Install-Chrust($files) {
     $lines = @(
         '@echo off',
         'rem Removes Chrust. Bookmarks, history and settings are kept.',
-        'reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Chrust" /f >nul 2>&1',
+        'reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChrustPort" /f >nul 2>&1',
+        'rem Drop Chrust from the browsers "Default apps" offers.',
+        "if exist `"$target`" `"$target`" --unregister-browser >nul 2>&1",
         "del `"$startLink`" >nul 2>&1",
-        'del "%~dp0chrust.exe" >nul 2>&1',
+        'del "%~dp0chrust-port.exe" >nul 2>&1',
         'del "%~dp0chrust.ico" >nul 2>&1',
         'del "%~dp0uninstall.cmd" >nul 2>&1',
         'rd "%~dp0" >nul 2>&1'

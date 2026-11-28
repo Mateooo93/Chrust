@@ -1,5 +1,5 @@
-//! Files Chrust keeps between runs: under `%LOCALAPPDATA%\Aurora` on
-//! Windows, under `$XDG_DATA_HOME/aurora` (usually `~/.local/share/aurora`)
+//! Files Chrust keeps between runs: under `%LOCALAPPDATA%\Chrust` on
+//! Windows, under `$XDG_DATA_HOME/chrust` (usually `~/.local/share/chrust`)
 //! elsewhere.
 
 use std::fs;
@@ -24,9 +24,9 @@ pub fn data_dir() -> PathBuf {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
             .unwrap_or_else(std::env::temp_dir);
-        // The folder keeps the name earlier versions used, so existing
-        // bookmarks, history and settings carry over to the rebrand.
-        return base.join("Aurora");
+        // The folder keeps the name the real Chrust keeps, so a copy of this
+        // port finds the bookmarks, history and profile it already has.
+        return base.join("Chrust");
     }
     #[cfg(not(windows))]
     {
@@ -35,7 +35,7 @@ pub fn data_dir() -> PathBuf {
             .filter(|p| p.is_absolute())
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
             .unwrap_or_else(std::env::temp_dir);
-        base.join("aurora")
+        base.join("chrust")
     }
 }
 
@@ -210,7 +210,17 @@ pub fn save_downloads(downloads: &[Download]) {
 }
 
 pub fn load_settings() -> Settings {
-    read_json(&data_dir().join("settings.json")).unwrap_or_default()
+    let mut settings: Settings = read_json(&data_dir().join("settings.json")).unwrap_or_default();
+    // The rebrand renamed the default palette and the animated background. A
+    // file written before it still names them "aurora", which matches nothing
+    // now, so carry the choice over instead of silently dropping it.
+    if settings.theme == "aurora" {
+        settings.theme = "chrustport".into();
+    }
+    if settings.background == "aurora" {
+        settings.background = "chrustport".into();
+    }
+    settings
 }
 
 pub fn save_settings(settings: &Settings) {

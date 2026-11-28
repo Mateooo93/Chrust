@@ -1,13 +1,13 @@
 # Captures screenshots of Chrust for the README.
 #
-#   pwsh tools/screenshots/capture.ps1 -Exe target/release/chrust.exe -Out docs/screenshots
+#   pwsh tools/screenshots/capture.ps1 -Exe target/release/chrust-port.exe -Out docs/screenshots
 #
 # Each shot is its own run against a throwaway profile whose session is written
 # first, so the tab strip and the active tab are exactly what the shot needs.
 # Driving the window with keystrokes was tried and is flaky: a frameless window
 # does not always take keyboard focus from a script.
 param(
-    [string]$Exe = "target/release/chrust.exe",
+    [string]$Exe = "target/release/chrust-port.exe",
     [string]$Out = "docs/screenshots",
     [string]$DataDir = "$env:TEMP\chrust-shots",
     [int]$Width = 1400,
